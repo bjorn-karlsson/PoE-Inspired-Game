@@ -18,27 +18,36 @@ python play.py --seed 42       # reproducible run
 python play.py --drops 8 --drop-level 80
 ```
 
-### Graphical inventory screen
+### Inventory Test (graphical bench)
 
-A pygame inventory / character screen (no combat) lets you see your gear,
-equip/unequip items, and hover for Path-of-Exile-style tooltips:
+A pygame inventory / character bench (no combat) for inspecting items and the
+stat system:
 
 ```bash
 pip install pygame
-python gui.py            # random loot
-python gui.py --seed 1   # reproducible loot
+python inventory_test.py            # fullscreen, random loot
+python inventory_test.py --seed 1   # reproducible loot
+python inventory_test.py --windowed
 ```
 
+- Inventory grid + equipment paper-doll; items show their **type** (the full
+  name is in the tooltip).
 - Left-click a bag item to **equip** it; left-click an equipped item to **unequip**.
-- Hover any item for a tooltip of its rolled mods.
-- The stats panel updates live as you change gear.
+- Hover any item for a PoE-style tooltip (item level, requirements, properties,
+  mods). **Hold Alt** to also see each mod's value **range and tier**.
+- Stats panel with selectable **tabs** (Defense / Offense / Attributes / All)
+  and mouse-wheel **scrolling**.
+- **New Loot (reseed)** button rerolls everything with a fresh random seed.
+- **Debug** mode: pick a stat and see exactly how it is built — every source
+  item's flat / increased / more contribution, the final calculation, and a
+  match-check against the engine total.
 - Rarity is colour-coded (white/blue/yellow/orange).
 
 Run the tests:
 
 ```bash
 python -m unittest discover -s tests -v
-python gui.py --selftest   # headless smoke test of the GUI
+python inventory_test.py --selftest   # headless smoke test of the UI
 ```
 
 ## Example

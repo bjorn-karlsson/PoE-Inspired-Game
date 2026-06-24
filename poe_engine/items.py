@@ -22,6 +22,7 @@ class Item:
     def __init__(self):
         self.domain = None
         self.dropLevel = None
+        self.itemLevel = None
         self.itemClass = None
         self.name = None
         self.tags = []
@@ -87,6 +88,7 @@ class Item:
 
         item.domain = base.get("domain")
         item.dropLevel = base.get("drop_level")
+        item.itemLevel = drop_level
         item.itemClass = base.get("item_class")
         item.name = base.get("name")
         item.tags = base.get("tags") or []
