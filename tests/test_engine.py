@@ -7,6 +7,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from poe_engine import Character, Monster, Stats, seed
+from poe_engine.analysis import mod_tier, stat_breakdown
 from poe_engine.combat import attack, hit_chance, simulate_fight
 from poe_engine.inventory import Inventory
 from poe_engine.items import Item, Ring
@@ -151,6 +152,33 @@ class CombatTests(unittest.TestCase):
         weak = Monster("Rat", level=1)
         winner = simulate_fight(hero, weak, max_rounds=100)
         self.assertIsNotNone(winner)
+
+
+class AnalysisTests(unittest.TestCase):
+    def test_mod_tier_bounds(self):
+        tier, total = mod_tier("does_not_exist")
+        self.assertEqual((tier, total), (1, 1))
+
+    def test_breakdown_reconciles_with_engine(self):
+        seed(11)
+        hero = Character("Hero", level=20)
+        for _ in range(6):
+            hero.equip(Item.generate(drop_level=72, item_class="Body Armour",
+                                     rarity_bonus=90))
+        for path in ("life", "armour", "evasion", "fireResistance"):
+            bd = stat_breakdown(hero, path)
+            self.assertAlmostEqual(bd["computed_total"], bd["actual_total"], places=1,
+                                   msg=f"{path} breakdown does not match engine")
+
+    def test_breakdown_lists_equipped_sources(self):
+        seed(7)
+        hero = Character("Hero", level=20)
+        # Body armours reliably carry life/defence mods.
+        for _ in range(4):
+            hero.equip(Item.generate(drop_level=72, item_class="Body Armour",
+                                     rarity_bonus=95))
+        names = {src["name"] for src in stat_breakdown(hero, "life")["sources"]}
+        self.assertIn("Base character", names)
 
 
 if __name__ == "__main__":
