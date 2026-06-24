@@ -1,0 +1,5 @@
+# The engine and demo run on the Python standard library only (Python 3.8+).
+# This file is intentionally dependency-free; add optional dev tools below.
+
+# Development (optional):
+#   pip install pytest
