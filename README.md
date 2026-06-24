@@ -18,10 +18,27 @@ python play.py --seed 42       # reproducible run
 python play.py --drops 8 --drop-level 80
 ```
 
+### Graphical inventory screen
+
+A pygame inventory / character screen (no combat) lets you see your gear,
+equip/unequip items, and hover for Path-of-Exile-style tooltips:
+
+```bash
+pip install pygame
+python gui.py            # random loot
+python gui.py --seed 1   # reproducible loot
+```
+
+- Left-click a bag item to **equip** it; left-click an equipped item to **unequip**.
+- Hover any item for a tooltip of its rolled mods.
+- The stats panel updates live as you change gear.
+- Rarity is colour-coded (white/blue/yellow/orange).
+
 Run the tests:
 
 ```bash
 python -m unittest discover -s tests -v
+python gui.py --selftest   # headless smoke test of the GUI
 ```
 
 ## Example

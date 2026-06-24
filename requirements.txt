@@ -1,5 +1,8 @@
-# The engine and demo run on the Python standard library only (Python 3.8+).
-# This file is intentionally dependency-free; add optional dev tools below.
+# The engine core and the text demo (play.py) run on the Python standard
+# library only (Python 3.8+).
+#
+# The graphical inventory screen (gui.py) needs pygame:
+pygame>=2.5
 
 # Development (optional):
 #   pip install pytest
