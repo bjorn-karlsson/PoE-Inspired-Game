@@ -34,7 +34,12 @@ python inventory_test.py --windowed
   name is in the tooltip).
 - Left-click a bag item to **equip** it; left-click an equipped item to **unequip**.
 - Hover any item for a PoE-style tooltip (item level, requirements, properties,
-  mods). **Hold Alt** to also see each mod's value **range and tier**.
+  mods). **Hold Alt** to also see each mod's **affix type** (implicit / prefix /
+  suffix), affix name, **tier** and value **range**.
+- **Currency**: Magic-and-better items drop **unidentified** (marked `?`). Use a
+  **Scroll of Wisdom** to identify them, or a **Chaos Orb** to reforge a rare
+  with new mods. Click a currency to select it, then click a bag item to use it
+  (right-click / Esc to cancel). Currency stacks (Wisdom ×40, Chaos ×20).
 - Stats panel with selectable **tabs** (Defense / Offense / Attributes / All)
   and mouse-wheel **scrolling**.
 - **New Loot (reseed)** button rerolls everything with a fresh random seed.
@@ -139,7 +144,8 @@ The refactor fixed real bugs and reorganized the prototype:
 ## Roadmap ideas
 
 - Hand-authored **unique** items with fixed mods.
-- Crafting currency (alteration / chaos / exalt style re-rolls).
+- More crafting currency (Orb of Alteration / Augmentation / Exalted / Divine).
+- Drag-and-drop inventory and a tooltip stat-diff vs equipped gear.
 - Skills, gems and damage-over-time.
 - Persistence (save/load characters and stashes).
 ```

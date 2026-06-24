@@ -9,10 +9,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from poe_engine import Character, Monster, Stats, seed
 from poe_engine.analysis import mod_tier, stat_breakdown
 from poe_engine.combat import attack, hit_chance, simulate_fight
+from poe_engine.currency import ChaosOrb, ScrollOfWisdom
 from poe_engine.inventory import Inventory
 from poe_engine.items import Item, Ring
 from poe_engine.rarity import Rarities
 from poe_engine.stats import Stat
+
+
+def _generate_until(rarity, **kwargs):
+    seed(2024)
+    for _ in range(500):
+        item = Item.generate(**kwargs)
+        if item.rarity.rarity == rarity:
+            return item
+    raise AssertionError(f"could not roll a {rarity} item")
 
 
 class StatMathTests(unittest.TestCase):
@@ -179,6 +189,46 @@ class AnalysisTests(unittest.TestCase):
                                      rarity_bonus=95))
         names = {src["name"] for src in stat_breakdown(hero, "life")["sources"]}
         self.assertIn("Base character", names)
+
+
+class CurrencyTests(unittest.TestCase):
+    def test_magic_items_drop_unidentified(self):
+        item = _generate_until(Rarities.MAGIC, drop_level=68, rarity_bonus=0)
+        self.assertFalse(item.identified)
+
+    def test_normal_items_are_identified(self):
+        item = _generate_until(Rarities.NORMAL, drop_level=68, rarity_bonus=0)
+        self.assertTrue(item.identified)
+
+    def test_scroll_of_wisdom_identifies(self):
+        item = _generate_until(Rarities.MAGIC, drop_level=68, rarity_bonus=0)
+        scroll = ScrollOfWisdom(count=2)
+        self.assertTrue(scroll.use_on(item))
+        self.assertTrue(item.identified)
+        self.assertEqual(scroll.count, 1)
+        # Using it again on an identified item does nothing and costs nothing.
+        self.assertFalse(scroll.use_on(item))
+        self.assertEqual(scroll.count, 1)
+
+    def test_chaos_orb_only_on_identified_rares(self):
+        rare = _generate_until(Rarities.RARE, drop_level=78, rarity_bonus=20)
+        chaos = ChaosOrb(count=1)
+        # Unidentified -> rejected.
+        rare.identified = False
+        self.assertFalse(chaos.applies_to(rare))
+        rare.identified = True
+        before = [m.id for m in rare.explicits]
+        self.assertTrue(chaos.use_on(rare))
+        after = [m.id for m in rare.explicits]
+        self.assertEqual(chaos.count, 0)
+        # A reforge should keep it Rare and (almost always) change the mods.
+        self.assertEqual(rare.rarity.rarity, Rarities.RARE)
+        self.assertTrue(after)  # still has explicit mods
+        self.assertNotEqual(before, after)
+
+    def test_stack_sizes(self):
+        self.assertEqual(ScrollOfWisdom.max_stack, 40)
+        self.assertEqual(ChaosOrb.max_stack, 20)
 
 
 if __name__ == "__main__":
