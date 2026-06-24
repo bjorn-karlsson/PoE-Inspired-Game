@@ -34,6 +34,7 @@ class Item:
         self.requirements = {}
 
         self.rarity = Rarity()
+        self.identified = True
         self.implicits = []   # list[Modifier]
         self.prefixes = []    # list[Modifier]
         self.suffixes = []    # list[Modifier]
@@ -108,17 +109,31 @@ class Item:
         item.rarity = Rarity(rarity_bonus)
         item.rarity.roll()
         item._roll_explicit_mods()
+        # Magic and better items drop unidentified (their mods are hidden until
+        # a Scroll of Wisdom is used); plain Normal items have nothing to hide.
+        item.identified = item.rarity.rarity == Rarities.NORMAL
         return item
 
     def _roll_explicit_mods(self):
         prefixes, suffixes = _mod_counts(self.rarity.rarity)
         if prefixes == 0 and suffixes == 0:
+            self.prefixes = []
+            self.suffixes = []
             return
 
         candidates = _candidate_mods(self.tags, self.dropLevel)
         used_groups = set()
         self.prefixes = _roll_from(candidates["prefix"], prefixes, used_groups)
         self.suffixes = _roll_from(candidates["suffix"], suffixes, used_groups)
+
+    def reroll_explicits(self):
+        """Reforge the item: discard explicit mods and roll fresh ones.
+
+        Used by currency such as the Chaos Orb. The base, implicits and rarity
+        are kept; only prefixes/suffixes are replaced.
+        """
+        self._roll_explicit_mods()
+        return self
 
 
 # -- module-level generation helpers --------------------------------------
