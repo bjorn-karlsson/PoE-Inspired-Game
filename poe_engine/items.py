@@ -1,6 +1,7 @@
 """Items: base types, generation, and equipment slots."""
 
 from . import data
+from .config import ROUND_DECIMALS
 from .modifiers import Modifier
 from .rarity import Rarities, Rarity
 from .rng import choice, randint, weighted_choice
@@ -43,6 +44,7 @@ class Item:
 
         self.rarity = Rarity()
         self.identified = True
+        self.quality = 0
         self.implicits = []   # list[Modifier]
         self.prefixes = []    # list[Modifier]
         self.suffixes = []    # list[Modifier]
@@ -68,13 +70,55 @@ class Item:
         }
 
     def build_stats(self) -> Stats:
-        """Build a fresh :class:`Stats` sheet from this item's rolled mods."""
+        """Build a fresh :class:`Stats` sheet from base stats + rolled mods."""
         from .stat_router import apply_modifier
 
         sheet = Stats()
+        self._apply_base_properties(sheet)
         for mod in self.implicits + self.explicits:
             apply_modifier(sheet, mod)
         return sheet
+
+    def _apply_base_properties(self, sheet):
+        """Add the base item's innate defences / damage, scaled by quality."""
+        props = self.properties or {}
+        quality_mult = 1 + self.quality / 100
+
+        def midpoint(value):
+            if isinstance(value, dict):
+                return (value.get("min", 0) + value.get("max", 0)) / 2
+            return value
+
+        for key, field in (("armour", "armour"), ("evasion", "evasion"),
+                           ("energy_shield", "energyShield")):
+            if key in props:
+                amount = midpoint(props[key]) * quality_mult
+                getattr(sheet, field).addPositiveStat(round(amount, ROUND_DECIMALS))
+
+        pmin, pmax = props.get("physical_damage_min"), props.get("physical_damage_max")
+        if pmin is not None and pmax is not None:
+            amount = (pmin + pmax) / 2 * quality_mult
+            sheet.physicalDamage.addPositiveStat(round(amount, ROUND_DECIMALS))
+
+    # -- quality -----------------------------------------------------------
+    @property
+    def quality_type(self):
+        """'weapon', 'armour' or None -- what kind of quality this item takes."""
+        if isinstance(self, Weapon):
+            return "weapon"
+        if isinstance(self, (Armour, Shield)):
+            return "armour"
+        return None
+
+    @property
+    def has_quality(self):
+        return self.quality_type is not None
+
+    def add_quality(self, amount, cap=20):
+        if not self.has_quality or self.quality >= cap:
+            return False
+        self.quality = min(cap, self.quality + amount)
+        return True
 
     def describe(self) -> str:
         """A PoE-style text block for the item."""
@@ -205,11 +249,17 @@ class Item:
         return self
 
     def remove_random_affix(self):
-        """Remove one random explicit mod (Orb of Annulment)."""
+        """Remove one random explicit mod (Orb of Annulment).
+
+        If that empties the item of explicit mods it drops back to Normal
+        rarity (a 0-affix Rare/Magic becomes a white item).
+        """
         if not self.explicits:
             return None
         victim = choice(self.explicits)
         (self.prefixes if victim in self.prefixes else self.suffixes).remove(victim)
+        if not self.explicits:
+            self.rarity.rarity = Rarities.NORMAL
         return victim
 
     def scour(self):

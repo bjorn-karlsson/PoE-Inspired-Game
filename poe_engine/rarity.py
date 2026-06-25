@@ -12,16 +12,18 @@ class Rarities(Enum):
     UNIQUE = 4   # fixed, hand-designed mods
 
 
-# Base chance (in percent) to roll *at least* this rarity, before any bonus.
-_RARITY_CHANCES = (
-    (Rarities.UNIQUE, 0.2),
-    (Rarities.RARE, 4.0),
-    (Rarities.MAGIC, 25.0),
+# How each rarity's chance scales with the luck/rarity bonus.  Uniques are
+# deliberately barely affected so a high bonus produces more rares/magics, not a
+# flood of uniques (base %, per-point-of-bonus %).
+_RARITY_CURVE = (
+    (Rarities.UNIQUE, 0.2, 0.02),
+    (Rarities.RARE, 5.0, 0.5),
+    (Rarities.MAGIC, 30.0, 1.0),
 )
 
 
 class Rarity:
-    """Holds a rolled rarity plus a small luck/quality bonus (0-100)."""
+    """Holds a rolled rarity plus a small luck/rarity bonus (0-100)."""
 
     def __init__(self, bonus=0.0):
         self.rarity = Rarities.NORMAL
@@ -31,13 +33,13 @@ class Rarity:
         return {"rarity": self.rarity.name, "bonus": round(self.bonus, 2)}
 
     def roll(self):
-        for rarity, base_chance in _RARITY_CHANCES:
-            if chance_roll(base_chance + self.bonus):
+        for rarity, base_chance, per_point in _RARITY_CURVE:
+            if chance_roll(base_chance + self.bonus * per_point):
                 self.rarity = rarity
                 return self.rarity
         self.rarity = Rarities.NORMAL
         return self.rarity
 
     @staticmethod
-    def random_bonus(max_bonus=10.0):
+    def random_bonus(max_bonus=8.0):
         return uniform(0, max_bonus)

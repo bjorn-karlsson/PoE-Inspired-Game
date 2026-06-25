@@ -234,11 +234,41 @@ class OrbOfScouring(Currency):
         return True
 
 
+class _QualityCurrency(Currency):
+    """Shared logic for quality-adding currency."""
+
+    quality_type = None
+    quality_step = 5
+
+    def applies_to(self, item):
+        return (getattr(item, "quality_type", None) == self.quality_type
+                and item.quality < 20)
+
+    def _apply(self, item):
+        return item.add_quality(self.quality_step)
+
+
+class BlacksmithsWhetstone(_QualityCurrency):
+    name = "Blacksmith's Whetstone"
+    max_stack = 20
+    description = "Improves the quality of a weapon (+5%, max 20%)."
+    _deny_reason = "needs a weapon below 20% quality"
+    quality_type = "weapon"
+
+
+class ArmourersScrap(_QualityCurrency):
+    name = "Armourer's Scrap"
+    max_stack = 40
+    description = "Improves the quality of an armour (+5%, max 20%)."
+    _deny_reason = "needs an armour below 20% quality"
+    quality_type = "armour"
+
+
 # In rough order of the PoE crafting progression.
 CURRENCY_TYPES = [
     ScrollOfWisdom, OrbOfTransmutation, OrbOfAugmentation, OrbOfAlteration,
     RegalOrb, OrbOfAlchemy, ChaosOrb, ExaltedOrb, DivineOrb, BlessedOrb,
-    OrbOfAnnulment, OrbOfScouring,
+    OrbOfAnnulment, OrbOfScouring, BlacksmithsWhetstone, ArmourersScrap,
 ]
 
 

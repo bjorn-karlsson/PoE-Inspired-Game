@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """Inventory Test -- a graphical inventory / character bench for poe_engine.
 
-A no-combat sandbox to inspect items and the stat system:
+A no-combat sandbox to inspect items, currency and the stat system:
 
-* Equipment paper-doll + grid inventory (items show their *type*; the full name
-  is in the tooltip).
-* Left-click a bag item to equip it; left-click equipped gear to unequip.
-* Hover an item for a PoE-style tooltip (item level, requirements, mods).
-  Hold **Alt** while hovering to also see each mod's value range and tier.
-* Stats panel with selectable tabs (Defense / Offense / Attributes / All) and
-  mouse-wheel scrolling.
-* **New Loot** button rerolls everything with a fresh random seed.
-* **Debug** mode: pick a stat and see exactly how it is built -- every source
-  item's flat / increased / more contribution and the final calculation.
+* Resizable window; equipment paper-doll + a grid inventory that holds both
+  items and stackable currency.
+* Drag items onto the paper-doll to equip (only items that have a slot), drag
+  equipped items back to the bag to unequip, drag items around the bag to
+  rearrange, and drag a currency orb onto an item to use it.
+* Hover an item for a PoE-style tooltip (item level, quality, requirements,
+  mods). Hold **Alt** to also see each mod's affix type, name, tier and range.
+* Stats panel with tabs (Defense / Offense / Attributes / All) + scrolling.
+* **Debug** mode breaks a stat down by source with the full calculation.
+* **New Loot** rerolls everything with a fresh random seed.
 
 Run it::
 
-    python inventory_test.py            # fullscreen, random loot
-    python inventory_test.py --seed 1   # reproducible loot
-    python inventory_test.py --windowed
+    python inventory_test.py
+    python inventory_test.py --seed 1
+    python inventory_test.py --fullscreen
 """
 
 import argparse
@@ -36,31 +36,31 @@ from poe_engine.rng import seed as rng_seed
 
 
 # ---------------------------------------------------------------- colours ----
-BG = (17, 17, 21)
-PANEL = (28, 28, 36)
-PANEL_LIGHT = (46, 46, 58)
-SLOT_BG = (38, 38, 50)
-SLOT_EMPTY_TEXT = (95, 95, 112)
-TEXT = (222, 222, 228)
-DIM = (150, 150, 162)
-FAINT = (110, 110, 124)
-ACCENT = (205, 172, 92)
-BTN = (52, 52, 66)
-BTN_HOT = (72, 72, 90)
-BTN_ON = (70, 100, 70)
+TEXT = (224, 224, 230)
+DIM = (152, 152, 165)
+FAINT = (108, 108, 124)
+ACCENT = (214, 178, 96)
+PANEL = (30, 31, 40)
+PANEL_LIGHT = (52, 53, 66)
+CELL = (22, 23, 30)
+SLOT_BG = (40, 41, 54)
+SLOT_EMPTY = (92, 93, 110)
+BTN = (54, 55, 70)
+BTN_HOT = (74, 76, 96)
+BTN_ON = (74, 104, 78)
+GOOD = (130, 220, 140)
+BAD = (228, 120, 120)
+QUALITY = (120, 210, 160)
 
 RARITY_COLORS = {
     Rarities.NORMAL: (200, 200, 205),
-    Rarities.MAGIC: (120, 150, 255),
-    Rarities.RARE: (240, 220, 90),
-    Rarities.UNIQUE: (210, 120, 45),
+    Rarities.MAGIC: (122, 152, 255),
+    Rarities.RARE: (238, 218, 92),
+    Rarities.UNIQUE: (208, 120, 46),
 }
 IMPLICIT_COLOR = (120, 200, 255)
-EXPLICIT_COLOR = (160, 170, 255)
-POS_COLOR = (130, 220, 140)
-NEG_COLOR = (230, 120, 120)
+EXPLICIT_COLOR = (162, 172, 255)
 
-# Equipment paper-doll: slot -> (column, row) in a 3x4 mini grid.
 DOLL_LAYOUT = {
     "helmet": (1, 0), "amulet": (2, 0),
     "weapon": (0, 1), "bodyArmour": (1, 1), "offhand": (2, 1),
@@ -73,7 +73,6 @@ SLOT_LABELS = {
     "amulet": "Amulet", "belt": "Belt", "ring1": "Ring", "ring2": "Ring",
 }
 
-# Stat registry: (path, label, category, format)
 STAT_REGISTRY = [
     ("attributes.strength", "Strength", "attr", "num"),
     ("attributes.dexterity", "Dexterity", "attr", "num"),
@@ -124,49 +123,67 @@ def prettify(stat_id):
     return s.replace("_", " ")
 
 
-_STOPWORDS = {"orb", "of", "scroll"}
+_STOPWORDS = {"orb", "of", "scroll", "s", "blacksmith's", "armourer's"}
 
 
 def orb_abbrev(name):
-    """Short tag for an orb, e.g. 'Orb of Transmutation' -> 'Tra'."""
-    for word in name.split():
+    for word in name.replace("'", "").split():
         if word.lower() not in _STOPWORDS:
             return word[:3]
     return name[:3]
 
 
-def ORB_COLOR(name):
-    """A stable-ish colour per orb, keyed on its distinctive word."""
+def orb_color(name):
     palette = {
         "Wisdom": (120, 190, 230), "Transmutation": (120, 150, 240),
         "Augmentation": (120, 150, 240), "Alteration": (110, 130, 235),
         "Regal": (210, 160, 90), "Alchemy": (235, 200, 110),
         "Chaos": (210, 120, 60), "Exalted": (235, 215, 130),
-        "Divine": (245, 235, 200), "Blessed": (200, 150, 230),
+        "Divine": (245, 235, 205), "Blessed": (200, 150, 230),
         "Annulment": (210, 110, 120), "Scouring": (160, 160, 170),
+        "Whetstone": (170, 175, 185), "Scrap": (180, 150, 120),
     }
-    for word in name.split():
+    for word in name.replace("'", "").split():
         if word in palette:
             return palette[word]
     return (180, 160, 110)
 
 
+# ----------------------------------------------------------- bag entries ----
+class Entry:
+    """An item or a currency stack placed on the inventory grid."""
+
+    def __init__(self, obj, currency=False):
+        self.obj = obj
+        self.currency = currency
+        self.x = 0
+        self.y = 0
+
+    @property
+    def w(self):
+        return 1 if self.currency else max(1, self.obj.inventoryWidth)
+
+    @property
+    def h(self):
+        return 1 if self.currency else max(1, self.obj.inventoryHeight)
+
+
 # ----------------------------------------------------------- demo content ----
-def make_demo_character(item_count=22, drop_level=74):
-    hero = Character("Exile", level=20)
+def make_loot(item_count=20, drop_level=74):
     classes = ["Helmet", "Body Armour", "Gloves", "Boots", "Amulet", "Ring",
-               "Ring", "Belt", "One Hand Sword", "Two Hand Axe", "Shield",
-               "Bow", "Wand", "Sceptre", "Staff"]
+               "Belt", "One Hand Sword", "Two Hand Axe", "Shield", "Bow",
+               "Wand", "Sceptre", "Staff"]
+    items = []
     for i in range(item_count):
-        item = Item.generate(drop_level=drop_level, item_class=classes[i % len(classes)],
-                             rarity_bonus=45)
-        hero.inventory.addItem(item)
-    return hero
+        items.append(Item.generate(drop_level=drop_level,
+                                    item_class=classes[i % len(classes)],
+                                    rarity_bonus=22))
+    return items
 
 
 # ------------------------------------------------------------- the screen ----
 class InventoryTest:
-    def __init__(self, screen, item_count=22):
+    def __init__(self, screen, item_count=20):
         self.screen = screen
         self.item_count = item_count
         self.W, self.H = screen.get_size()
@@ -174,10 +191,10 @@ class InventoryTest:
         self.f_tiny = pygame.font.Font(None, 19)
         self.f_small = pygame.font.Font(None, 22)
         self.f = pygame.font.Font(None, 26)
-        self.f_big = pygame.font.Font(None, 36)
+        self.f_big = pygame.font.Font(None, 38)
 
-        self.character = make_demo_character(item_count)
-        self.currency = starter_currency()
+        self.character = Character("Exile", level=20)
+        self.entries = []
 
         # UI state
         self.tab = "def"
@@ -185,121 +202,264 @@ class InventoryTest:
         self.debug_mode = False
         self.debug_stat = None
         self.dbg_scroll = 0
-        self._content_h = 0       # measured each frame for scroll clamping
+        self._content_h = 0
         self._bd_cache = None
         self._bd_sig = None
-        self.selected_currency = None
         self.status_text = ""
         self.status_timer = 0
 
-        # drag-and-drop
+        # drag state
         self._press_pos = None
-        self._press_target = None   # ('inv', item) | ('slot', name) | ('currency', i)
+        self._press_target = None     # ("entry", Entry) | ("slot", name)
         self._dragging = False
-        self.drag = None            # {'label', 'color'} of the thing being dragged
+        self.drag = None              # {"label","color"}
+        self._grab_offset = (0, 0)
 
         self.slot_rects = {}
-        self.inv_rects = []
         self.buttons = {}
         self.tab_rects = []
-        self.dbg_rows = []        # clickable (path, rect) in debug list
-        self.currency_rects = []  # parallel to self.currency
-        self.back_rect = None     # "back to list" in debug detail
+        self.dbg_rows = []
+        self.back_rect = None
+        self.bg = None
 
         self._build_layout()
-        self._repack()
+        self._fill_bag()
 
-    # -- geometry ----------------------------------------------------------
+    # ===================================================== layout ============
+    def on_resize(self, w, h):
+        self.W, self.H = max(1120, w), max(720, h)
+        self._build_layout()
+        # keep positions; re-place anything that no longer fits
+        for entry in self.entries:
+            if not self._fits(entry, entry.x, entry.y):
+                self._place(entry)
+
     def _build_layout(self):
-        margin = 40
-        self.doll_origin = (margin, 150)
-        self.doll_cell = max(72, min(92, (self.H - 320) // 4 - 8))
-        self.doll_gap = 10
-
-        doll_w = 3 * (self.doll_cell + self.doll_gap)
-        self.stats_x = margin + doll_w + 40
-        self.stats_w = 380
-        self.panel_top = 150
-        self.panel_bottom = self.H - 60
+        margin = 36
+        self.panel_top = 132
+        self.panel_bottom = self.H - 54
         self.panel_h = self.panel_bottom - self.panel_top
 
-        self.inv_origin = (self.stats_x + self.stats_w + 40, self.panel_top)
-        self.inv_cell = 52
-        avail_w = self.W - margin - self.inv_origin[0]
-        self.inv_cols = max(6, avail_w // self.inv_cell)
-        self.inv_rows = max(6, self.panel_h // self.inv_cell)
-
-        ox, oy = self.doll_origin
+        # paper-doll
+        self.doll_cell = max(74, min(96, (self.panel_h - 30) // 5))
+        self.doll_gap = 10
+        self.doll_origin = (margin, self.panel_top + 6)
         doll_w = 3 * (self.doll_cell + self.doll_gap) - self.doll_gap
+        self.doll_panel = pygame.Rect(margin - 8, self.panel_top - 4,
+                                      doll_w + 16, self.panel_h + 4)
+        self.slot_rects = {}
+        ox, oy = self.doll_origin
         for slot, (col, row) in DOLL_LAYOUT.items():
             x = ox + col * (self.doll_cell + self.doll_gap)
             y = oy + row * (self.doll_cell + self.doll_gap)
             self.slot_rects[slot] = pygame.Rect(x, y, self.doll_cell, self.doll_cell)
 
-        # Currency panel sits under the paper-doll, as a compact grid of orbs.
-        cur_y = oy + 4 * (self.doll_cell + self.doll_gap) + 34
-        self.currency_origin = (ox, cur_y)
-        self.cur_cell = 62
-        self.cur_cols = max(4, (doll_w + self.doll_gap) // (self.cur_cell + 8))
-        self.currency_rects = []
-        for i in range(len(self.currency)):
-            col, row = i % self.cur_cols, i // self.cur_cols
-            rect = pygame.Rect(ox + col * (self.cur_cell + 8),
-                               cur_y + row * (self.cur_cell + 8),
-                               self.cur_cell, self.cur_cell)
-            self.currency_rects.append(rect)
+        # stats column
+        self.stats_x = self.doll_panel.right + 28
+        self.stats_w = 366
+        self.stats_panel = pygame.Rect(self.stats_x, self.panel_top,
+                                       self.stats_w, self.panel_h)
 
-        # Toolbar buttons (top right area).
+        # inventory column
+        inv_x = self.stats_panel.right + 28
+        self.inv_cell = 54
+        self.inv_origin = (inv_x + 10, self.panel_top + 10)
+        avail_w = self.W - margin - self.inv_origin[0]
+        self.inv_cols = max(6, avail_w // self.inv_cell)
+        self.inv_rows = max(6, (self.panel_h - 20) // self.inv_cell)
+        self.inv_panel = pygame.Rect(inv_x, self.panel_top,
+                                     self.inv_cols * self.inv_cell + 20,
+                                     self.panel_h)
+
+        # toolbar buttons (top-right, clear of the section headers)
         self.buttons = {}
-        bx = self.inv_origin[0]
-        reload_w = self.f_small.size("New Loot (reseed)")[0] + 28
-        self.buttons["reload"] = pygame.Rect(bx, 96, reload_w, 34)
-        debug_w = self.f_small.size("Debug: OFF")[0] + 28
-        self.buttons["debug"] = pygame.Rect(bx + reload_w + 12, 96, debug_w, 34)
+        bw1 = self.f_small.size("New Loot")[0] + 28
+        bw2 = self.f_small.size("Debug: OFF")[0] + 28
+        bx = self.W - margin - bw2
+        self.buttons["debug"] = pygame.Rect(bx, 34, bw2, 34)
+        self.buttons["reload"] = pygame.Rect(bx - bw1 - 12, 34, bw1, 34)
 
-        # Stats tabs.
+        # stat tabs
         self.tab_rects = []
-        tx = self.stats_x
+        tx = self.stats_x + 6
         for label, key in TABS:
-            w = self.f_small.size(label)[0] + 22
-            self.tab_rects.append((key, label, pygame.Rect(tx, 110, w, 30)))
-            tx += w + 8
+            w = self.f_small.size(label)[0] + 20
+            self.tab_rects.append((key, label, pygame.Rect(tx, self.panel_top - 36, w, 28)))
+            tx += w + 6
 
-    def _repack(self):
-        occ = [[False] * self.inv_cols for _ in range(self.inv_rows)]
-        self.inv_rects = []
-        ox, oy = self.inv_origin
-        for item in self.character.inventory.items:
-            w = min(item.inventoryWidth, self.inv_cols)
-            h = min(item.inventoryHeight, self.inv_rows)
-            spot = self._find_spot(occ, w, h)
-            if spot is None:
+        self.bg = self._make_gradient()
+
+    def _make_gradient(self):
+        surf = pygame.Surface((self.W, self.H))
+        top, bot = (24, 26, 36), (12, 12, 17)
+        for y in range(self.H):
+            t = y / max(1, self.H - 1)
+            surf.fill(tuple(int(top[i] + (bot[i] - top[i]) * t) for i in range(3)),
+                      (0, y, self.W, 1))
+        return surf
+
+    # ===================================================== bag model =========
+    def _fill_bag(self):
+        self.entries = [Entry(i) for i in make_loot(self.item_count)]
+        self.entries += [Entry(c, currency=True) for c in starter_currency()]
+        # place items first (largest first), then currency
+        self.entries.sort(key=lambda e: (e.currency, -(e.w * e.h)))
+        for entry in self.entries:
+            self._place(entry)
+
+    def _fits(self, entry, gx, gy):
+        if gx < 0 or gy < 0 or gx + entry.w > self.inv_cols or gy + entry.h > self.inv_rows:
+            return False
+        for other in self.entries:
+            if other is entry:
                 continue
-            gx, gy = spot
-            for dy in range(h):
-                for dx in range(w):
-                    occ[gy + dy][gx + dx] = True
-            rect = pygame.Rect(ox + gx * self.inv_cell + 2, oy + gy * self.inv_cell + 2,
-                               w * self.inv_cell - 4, h * self.inv_cell - 4)
-            self.inv_rects.append((item, rect))
+            if (gx < other.x + other.w and gx + entry.w > other.x and
+                    gy < other.y + other.h and gy + entry.h > other.y):
+                return False
+        return True
 
-    def _find_spot(self, occ, w, h):
-        for y in range(self.inv_rows - h + 1):
-            for x in range(self.inv_cols - w + 1):
-                if all(not occ[y + dy][x + dx]
-                       for dy in range(h) for dx in range(w)):
-                    return x, y
+    def _place(self, entry):
+        for y in range(self.inv_rows):
+            for x in range(self.inv_cols):
+                if self._fits(entry, x, y):
+                    entry.x, entry.y = x, y
+                    return True
+        return False
+
+    def _entry_rect(self, entry):
+        ox, oy = self.inv_origin
+        return pygame.Rect(ox + entry.x * self.inv_cell + 2,
+                           oy + entry.y * self.inv_cell + 2,
+                           entry.w * self.inv_cell - 4, entry.h * self.inv_cell - 4)
+
+    def _entry_at(self, pos):
+        for entry in self.entries:
+            if self._entry_rect(entry).collidepoint(pos):
+                return entry
         return None
 
-    # -- interaction -------------------------------------------------------
-    def item_at(self, pos):
-        for item, rect in self.inv_rects:
-            if rect.collidepoint(pos):
-                return ("inv", item)
+    def _cell_at(self, pixel):
+        ox, oy = self.inv_origin
+        return ((pixel[0] - ox) // self.inv_cell, (pixel[1] - oy) // self.inv_cell)
+
+    def _equippable(self, item):
+        return self.character.equipments.slot_for(item) is not None
+
+    # ===================================================== interaction =======
+    def on_mouse_down(self, pos):
+        self._press_pos = pos
+        self._dragging = False
+        self._press_target = None
+        entry = self._entry_at(pos)
+        if entry is not None:
+            self._press_target = ("entry", entry)
+            r = self._entry_rect(entry)
+            self._grab_offset = (pos[0] - r.x, pos[1] - r.y)
+            return
+        for slot, rect in self.slot_rects.items():
+            if rect.collidepoint(pos) and getattr(self.character.equipments, slot):
+                self._press_target = ("slot", slot)
+                self._grab_offset = (rect.width // 2, rect.height // 2)
+                return
+
+    def on_mouse_motion(self, pos):
+        if self._press_pos and not self._dragging and self._press_target:
+            if abs(pos[0] - self._press_pos[0]) + abs(pos[1] - self._press_pos[1]) > 6:
+                self._dragging = True
+                self.drag = self._make_drag(self._press_target)
+
+    def on_mouse_up(self, pos):
+        if self._dragging:
+            self._drop(pos)
+        elif self._press_pos is not None:
+            self.handle_click(self._press_pos)
+        self._press_pos = self._press_target = None
+        self._dragging = False
+        self.drag = None
+
+    def _make_drag(self, target):
+        kind, value = target
+        if kind == "slot":
+            item = getattr(self.character.equipments, value)
+            return {"label": item.itemClass, "color": RARITY_COLORS.get(item.rarity.rarity, TEXT)}
+        entry = value
+        if entry.currency:
+            return {"label": orb_abbrev(entry.obj.name), "color": orb_color(entry.obj.name)}
+        return {"label": entry.obj.itemClass,
+                "color": RARITY_COLORS.get(entry.obj.rarity.rarity, TEXT)}
+
+    def _drop(self, pos):
+        kind, value = self._press_target
+        if kind == "slot":
+            if self.inv_panel.collidepoint(pos):
+                self._unequip(value, pos)
+            return
+        entry = value
+        slot = self._slot_at(pos)
+        if slot is not None and not entry.currency:
+            self._equip(entry)
+            return
+        target = self._entry_at(pos)
+        if entry.currency and target is not None and not target.currency:
+            self._use_currency(entry, target.obj)
+            return
+        if self.inv_panel.collidepoint(pos):
+            self._move_entry(entry, pos)
+
+    def _slot_at(self, pos):
         for slot, rect in self.slot_rects.items():
             if rect.collidepoint(pos):
-                return ("slot", slot)
+                return slot
         return None
+
+    def _move_entry(self, entry, pos):
+        tx = pos[0] - self._grab_offset[0] + self.inv_cell // 2
+        ty = pos[1] - self._grab_offset[1] + self.inv_cell // 2
+        gx, gy = self._cell_at((tx, ty))
+        if self._fits(entry, gx, gy):
+            entry.x, entry.y = gx, gy
+
+    def _equip(self, entry):
+        item = entry.obj
+        if not self._equippable(item):
+            self._flash(f"{item.itemClass} can't be equipped")
+            return
+        self.entries.remove(entry)
+        replaced = self.character.equip(item)
+        if replaced is not None:
+            self._add_to_bag(replaced)
+        self._invalidate()
+
+    def _unequip(self, slot, pos=None):
+        item = getattr(self.character.equipments, slot)
+        if item is None:
+            return
+        self.character.unequip(slot)
+        self._add_to_bag(item, pos)
+        self._invalidate()
+
+    def _add_to_bag(self, item, pos=None):
+        entry = Entry(item)
+        if pos is not None and self.inv_panel.collidepoint(pos):
+            gx, gy = self._cell_at(pos)
+            if self._fits(entry, gx, gy):
+                entry.x, entry.y = gx, gy
+                self.entries.append(entry)
+                return
+        if not self._place(entry):
+            self._flash("No room in inventory")
+            return
+        self.entries.append(entry)
+
+    def _use_currency(self, currency_entry, item):
+        cur = currency_entry.obj
+        if cur.use_on(item):
+            self._flash(f"{cur.name} used on {item.name}")
+            self._invalidate()
+        else:
+            self._flash(f"{cur.name}: {cur.reason(item)}")
+        if cur.count <= 0 and currency_entry in self.entries:
+            self.entries.remove(currency_entry)
 
     def handle_click(self, pos):
         if self.buttons["reload"].collidepoint(pos):
@@ -313,46 +473,36 @@ class InventoryTest:
             if rect.collidepoint(pos):
                 self.tab, self.scroll = key, 0
                 return
-
-        # Debug breakdown: "back" link, then the (only-while-listing) stat rows.
         if self.debug_mode and self.debug_stat is not None:
             if self.back_rect and self.back_rect.collidepoint(pos):
                 self.debug_stat = None
                 self.dbg_scroll = 0
-                return
-        elif self.debug_mode:
+            return
+        if self.debug_mode:
             for path, rect in self.dbg_rows:
                 if rect.collidepoint(pos):
                     self.debug_stat = path
                     self.dbg_scroll = 0
                     return
-
-        # Currency: select a stack, or apply the selected one to a bag item.
-        for i, rect in enumerate(self.currency_rects):
-            if rect.collidepoint(pos):
-                if self.currency[i].count > 0:
-                    self.selected_currency = (None if self.selected_currency == i
-                                              else i)
-                return
-
-        target = self.item_at(pos)
-        if target is None:
-            self.selected_currency = None
             return
-        kind, value = target
-        if self.selected_currency is not None and kind == "inv":
-            self._apply_currency(value)
+        # quick equip / unequip on click
+        entry = self._entry_at(pos)
+        if entry is not None and not entry.currency:
+            self._equip(entry)
             return
-        if kind == "inv":
-            self._equip_from_bag(value)
-        else:
-            self._unequip_to_bag(value)
+        slot = self._slot_at(pos)
+        if slot and getattr(self.character.equipments, slot):
+            self._unequip(slot)
 
-    def handle_escape(self) -> bool:
-        """Handle Esc. Returns True if it was consumed (don't quit)."""
-        if self.selected_currency is not None:
-            self.selected_currency = None
-            return True
+    def handle_scroll(self, dy, pos):
+        if self.stats_panel.collidepoint(pos):
+            step = 36
+            if self.debug_mode and self.debug_stat:
+                self.dbg_scroll = max(0, self.dbg_scroll - dy * step)
+            else:
+                self.scroll = max(0, self.scroll - dy * step)
+
+    def handle_escape(self):
         if self.debug_mode and self.debug_stat is not None:
             self.debug_stat = None
             return True
@@ -361,144 +511,45 @@ class InventoryTest:
             return True
         return False
 
-    def deselect(self):
-        self.selected_currency = None
+    def reload_loot(self):
+        rng_seed(_random.randrange(1 << 30))
+        self.character = Character("Exile", level=20)
+        self.debug_stat = None
+        self.scroll = self.dbg_scroll = 0
+        self._invalidate()
+        self._fill_bag()
+        self._flash("Rerolled all loot with a new seed")
 
-    def _apply_currency(self, item):
-        cur = self.currency[self.selected_currency]
-        if cur.use_on(item):
-            self._flash(f"{cur.name} used on {item.name}")
-            self._bd_sig = None  # equipment/stat may have changed
-        else:
-            self._flash(f"{cur.name}: {cur.reason(item)}")
-        if cur.count <= 0:
-            self.selected_currency = None
+    def _invalidate(self):
+        self._bd_sig = None
 
     def _flash(self, text):
         self.status_text = text
-        self.status_timer = 200
+        self.status_timer = 220
 
-    # -- drag and drop -----------------------------------------------------
-    def _inventory_rect(self):
-        ox, oy = self.inv_origin
-        return pygame.Rect(ox, oy, self.inv_cols * self.inv_cell,
-                           self.inv_rows * self.inv_cell)
-
-    def _draggable_at(self, pos):
-        for i, rect in enumerate(self.currency_rects):
-            if rect.collidepoint(pos) and self.currency[i].count > 0:
-                return ("currency", i)
-        for item, rect in self.inv_rects:
-            if rect.collidepoint(pos):
-                return ("inv", item)
-        for slot, rect in self.slot_rects.items():
-            if rect.collidepoint(pos) and getattr(self.character.equipments, slot):
-                return ("slot", slot)
-        return None
-
-    def on_mouse_down(self, pos):
-        self._press_pos = pos
-        self._press_target = self._draggable_at(pos)
-        self._dragging = False
-
-    def on_mouse_motion(self, pos):
-        if self._press_pos and not self._dragging and self._press_target:
-            if abs(pos[0] - self._press_pos[0]) + abs(pos[1] - self._press_pos[1]) > 6:
-                self._dragging = True
-                self.drag = self._make_drag(self._press_target)
-
-    def on_mouse_up(self, pos):
-        if self._dragging:
-            self._drop(pos)
-        elif self._press_pos is not None:
-            self.handle_click(self._press_pos)  # treat as a click
-        self._press_pos = self._press_target = None
-        self._dragging = False
-        self.drag = None
-
-    def _make_drag(self, target):
-        kind, value = target
-        if kind == "currency":
-            cur = self.currency[value]
-            return {"label": orb_abbrev(cur.name), "color": ORB_COLOR(cur.name)}
-        item = value if kind == "inv" else getattr(self.character.equipments, value)
-        return {"label": item.itemClass, "color": RARITY_COLORS.get(item.rarity.rarity, TEXT)}
-
-    def _drop(self, pos):
-        kind, value = self._press_target
-        if kind == "inv":
-            if any(r.collidepoint(pos) for r in self.slot_rects.values()):
-                self._equip_from_bag(value)
-        elif kind == "slot":
-            if self._inventory_rect().collidepoint(pos):
-                self._unequip_to_bag(value)
-        elif kind == "currency":
-            target = self.item_at(pos)
-            if target and target[0] == "inv":
-                self.selected_currency = value
-                self._apply_currency(target[1])
-                self.selected_currency = None
-
-    def handle_scroll(self, dy, pos):
-        if pos[0] < self.inv_origin[0]:  # over the stats column
-            step = 36
-            if self.debug_mode and self.debug_stat:
-                self.dbg_scroll = max(0, self.dbg_scroll - dy * step)
-            else:
-                self.scroll = max(0, self.scroll - dy * step)
-
-    def _equip_from_bag(self, item):
-        inv = self.character.inventory
-        if item not in inv.items:
-            return
-        inv.items.remove(item)
-        replaced = self.character.equip(item)
-        if replaced is not None and not inv.addItem(replaced):
-            self.character.equip(replaced)
-            if item in inv.items:
-                inv.items.remove(item)
-            inv.addItem(item)
-        self._repack()
-
-    def _unequip_to_bag(self, slot):
-        item = getattr(self.character.equipments, slot)
-        if item is None:
-            return
-        inv = self.character.inventory
-        if inv.currentSize + item.inventorySize > inv.size:
-            return
-        self.character.unequip(slot)
-        inv.addItem(item)
-        self._repack()
-
-    def reload_loot(self):
-        rng_seed(_random.randrange(1 << 30))
-        self.character = make_demo_character(self.item_count)
-        self.currency = starter_currency()
-        self.selected_currency = None
-        self.debug_stat = None
-        self.scroll = self.dbg_scroll = 0
-        self._bd_sig = None
-        self._flash("Rerolled all loot with a new seed")
-        self._repack()
-
-    # -- drawing -----------------------------------------------------------
+    # ===================================================== drawing ===========
     def draw(self, mouse_pos):
         s = self.screen
-        s.fill(BG)
-        title = self.f_big.render(
-            f"{self.character.name}  —  Level {self.character.level}", True, ACCENT)
-        s.blit(title, (40, 40))
-        s.blit(self.f_small.render("INVENTORY TEST", True, FAINT), (40, 82))
+        s.blit(self.bg, (0, 0))
+
+        s.blit(self.f_big.render(f"{self.character.name}", True, ACCENT), (36, 30))
+        lvl = self.f_small.render(f"Level {self.character.level}  ·  Inventory Test",
+                                  True, DIM)
+        s.blit(lvl, (36, 70))
 
         self._draw_toolbar(mouse_pos)
+        self._header(s, "EQUIPMENT", self.doll_panel.x + 8, self.panel_top - 32)
+        self._header(s, "CHARACTER" if not self.debug_mode else "DEBUG — STAT BREAKDOWN",
+                     self.stats_x + 6, 70)
+        self._header(s, "INVENTORY", self.inv_panel.x, self.panel_top - 32)
+
         self._draw_doll(s)
-        self._draw_currency(s, mouse_pos)
         if self.debug_mode:
             self._draw_debug(s)
         else:
             self._draw_stats(s)
-        self._draw_inventory(s)
+        self._draw_inventory(s, mouse_pos)
+
         self._draw_help(s)
         if self._dragging and self.drag:
             self._draw_drag_ghost(s, mouse_pos)
@@ -507,161 +558,152 @@ class InventoryTest:
 
         if self.status_timer > 0:
             self.status_timer -= 1
-            alpha = min(255, self.status_timer * 4)
             surf = self.f_small.render(self.status_text, True, ACCENT)
-            surf.set_alpha(alpha)
-            s.blit(surf, (40, self.H - 60))
+            surf.set_alpha(min(255, self.status_timer * 3))
+            s.blit(surf, (36, self.H - 78))
 
-    def _draw_currency(self, s, mouse_pos):
-        if not self.currency_rects:
-            return
-        ox, oy = self.currency_origin
-        s.blit(self.f_small.render("CURRENCY", True, DIM), (ox, oy - 26))
-        for i, rect in enumerate(self.currency_rects):
-            cur = self.currency[i]
-            selected = self.selected_currency == i
-            hot = rect.collidepoint(mouse_pos)
-            bg = (62, 58, 36) if selected else (BTN_HOT if hot else PANEL)
-            pygame.draw.rect(s, bg, rect, border_radius=8)
-            pygame.draw.rect(s, ACCENT if selected else PANEL_LIGHT, rect,
-                             width=2, border_radius=8)
-            # orb circle + abbreviation
-            cx, cy = rect.centerx, rect.centery - 6
-            base = ORB_COLOR(cur.name)
-            faded = cur.count == 0
-            col = tuple(c // 2 for c in base) if faded else base
-            pygame.draw.circle(s, col, (cx, cy), 16)
-            pygame.draw.circle(s, (235, 230, 215), (cx - 5, cy - 5), 4)
-            abbr = self.f_tiny.render(orb_abbrev(cur.name), True, (20, 18, 14))
-            s.blit(abbr, abbr.get_rect(center=(cx, cy + 1)))
-            count = self.f_tiny.render(str(cur.count), True,
-                                       TEXT if cur.count else FAINT)
-            s.blit(count, count.get_rect(centerx=cx, bottom=rect.bottom - 4))
+    def _header(self, s, text, x, y):
+        surf = self.f.render(text, True, DIM)
+        s.blit(surf, (x, y))
+        pygame.draw.line(s, PANEL_LIGHT, (x, y + 26), (x + surf.get_width(), y + 26), 2)
 
-    def _button(self, rect, label, hot, on=False):
-        color = BTN_ON if on else (BTN_HOT if hot else BTN)
-        pygame.draw.rect(self.screen, color, rect, border_radius=6)
-        pygame.draw.rect(self.screen, PANEL_LIGHT, rect, width=1, border_radius=6)
+    def _panel(self, s, rect):
+        pygame.draw.rect(s, PANEL, rect, border_radius=10)
+        pygame.draw.rect(s, PANEL_LIGHT, rect, width=1, border_radius=10)
+
+    def _button(self, s, rect, label, hot, on=False):
+        pygame.draw.rect(s, BTN_ON if on else (BTN_HOT if hot else BTN), rect, border_radius=7)
+        pygame.draw.rect(s, PANEL_LIGHT, rect, width=1, border_radius=7)
         surf = self.f_small.render(label, True, TEXT)
-        self.screen.blit(surf, surf.get_rect(center=rect.center))
+        s.blit(surf, surf.get_rect(center=rect.center))
 
     def _draw_toolbar(self, mouse_pos):
+        s = self.screen
         r = self.buttons["reload"]
-        self._button(r, "New Loot (reseed)", r.collidepoint(mouse_pos))
+        self._button(s, r, "New Loot", r.collidepoint(mouse_pos))
         d = self.buttons["debug"]
-        self._button(d, f"Debug: {'ON' if self.debug_mode else 'OFF'}",
+        self._button(s, d, f"Debug: {'ON' if self.debug_mode else 'OFF'}",
                      d.collidepoint(mouse_pos), on=self.debug_mode)
 
     def _draw_doll(self, s):
-        s.blit(self.f_small.render("EQUIPMENT", True, DIM),
-               (self.doll_origin[0], self.doll_origin[1] - 26))
+        self._panel(s, self.doll_panel)
         for slot, rect in self.slot_rects.items():
-            pygame.draw.rect(s, SLOT_BG, rect, border_radius=6)
-            pygame.draw.rect(s, PANEL_LIGHT, rect, width=2, border_radius=6)
+            pygame.draw.rect(s, SLOT_BG, rect, border_radius=7)
+            pygame.draw.rect(s, PANEL_LIGHT, rect, width=2, border_radius=7)
             item = getattr(self.character.equipments, slot)
             if item is None:
-                lbl = self.f_small.render(SLOT_LABELS[slot], True, SLOT_EMPTY_TEXT)
+                lbl = self.f_small.render(SLOT_LABELS[slot], True, SLOT_EMPTY)
                 s.blit(lbl, lbl.get_rect(center=rect.center))
             else:
-                self._draw_item_box(s, item, rect)
+                self._draw_item_icon(s, item, rect)
 
-    def _draw_inventory(self, s):
+    def _draw_inventory(self, s, mouse_pos):
+        self._panel(s, self.inv_panel)
         ox, oy = self.inv_origin
-        s.blit(self.f_small.render("INVENTORY", True, DIM), (ox, oy - 26))
-        grid = pygame.Rect(ox, oy, self.inv_cols * self.inv_cell,
-                           self.inv_rows * self.inv_cell)
-        pygame.draw.rect(s, PANEL, grid, border_radius=6)
+        grid = pygame.Rect(ox, oy, self.inv_cols * self.inv_cell, self.inv_rows * self.inv_cell)
         for c in range(self.inv_cols + 1):
             x = ox + c * self.inv_cell
-            pygame.draw.line(s, PANEL_LIGHT, (x, oy), (x, grid.bottom))
+            pygame.draw.line(s, (38, 39, 50), (x, oy), (x, grid.bottom))
         for r in range(self.inv_rows + 1):
             y = oy + r * self.inv_cell
-            pygame.draw.line(s, PANEL_LIGHT, (ox, y), (grid.right, y))
-        for item, rect in self.inv_rects:
-            self._draw_item_box(s, item, rect)
-
-    def _draw_item_box(self, s, item, rect):
-        color = RARITY_COLORS.get(item.rarity.rarity, TEXT)
-        inner = rect.inflate(-2, -2)
-        pygame.draw.rect(s, (24, 24, 30), inner, border_radius=5)
-        pygame.draw.rect(s, color, rect, width=2, border_radius=5)
-        # Show the item *type* on the box (name lives in the tooltip).
-        self._blit_wrapped_centered(s, item.itemClass, color, rect)
-        if not item.identified:
-            # Unidentified marker in the corner.
-            tag = self.f_tiny.render("?", True, (235, 180, 90))
-            badge = pygame.Rect(rect.right - 18, rect.y + 3, 15, 15)
-            pygame.draw.rect(s, (60, 45, 20), badge, border_radius=3)
-            s.blit(tag, tag.get_rect(center=badge.center))
-
-    def _blit_wrapped_centered(self, s, text, color, rect):
-        words = str(text).split()
-        lines, current = [], ""
-        for word in words:
-            trial = (current + " " + word).strip()
-            if self.f_tiny.size(trial)[0] <= rect.width - 8:
-                current = trial
+            pygame.draw.line(s, (38, 39, 50), (ox, y), (grid.right, y))
+        for entry in self.entries:
+            if self._dragging and self._press_target == ("entry", entry):
+                continue
+            rect = self._entry_rect(entry)
+            if entry.currency:
+                self._draw_currency_icon(s, entry.obj, rect)
             else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
+                self._draw_item_icon(s, entry.obj, rect)
+
+    def _draw_item_icon(self, s, item, rect):
+        color = RARITY_COLORS.get(item.rarity.rarity, TEXT)
+        pygame.draw.rect(s, CELL, rect, border_radius=6)
+        pygame.draw.rect(s, color, rect, width=2, border_radius=6)
+        self._wrapped_centered(s, item.itemClass, color, rect)
+        if not item.identified:
+            self._badge(s, rect.right - 17, rect.y + 3, "?", (235, 180, 90), (60, 45, 20))
+        if getattr(item, "quality", 0):
+            self._badge(s, rect.x + 4, rect.bottom - 18, f"{item.quality}", QUALITY, (24, 50, 36))
+
+    def _draw_currency_icon(self, s, cur, rect):
+        pygame.draw.rect(s, (30, 30, 40), rect, border_radius=6)
+        pygame.draw.rect(s, (90, 84, 60), rect, width=1, border_radius=6)
+        base = orb_color(cur.name)
+        cx, cy = rect.centerx, rect.centery - 4
+        pygame.draw.circle(s, base, (cx, cy), 15)
+        pygame.draw.circle(s, (240, 236, 222), (cx - 5, cy - 5), 4)
+        abbr = self.f_tiny.render(orb_abbrev(cur.name), True, (20, 18, 14))
+        s.blit(abbr, abbr.get_rect(center=(cx, cy + 1)))
+        cnt = self.f_tiny.render(str(cur.count), True, TEXT)
+        s.blit(cnt, cnt.get_rect(centerx=cx, bottom=rect.bottom - 2))
+
+    def _badge(self, s, x, y, text, fg, bg):
+        rect = pygame.Rect(x, y, 15, 15)
+        pygame.draw.rect(s, bg, rect, border_radius=3)
+        surf = self.f_tiny.render(text, True, fg)
+        s.blit(surf, surf.get_rect(center=rect.center))
+
+    def _wrapped_centered(self, s, text, color, rect):
+        words = str(text).split()
+        lines, cur = [], ""
+        for w in words:
+            t = (cur + " " + w).strip()
+            if self.f_tiny.size(t)[0] <= rect.width - 8:
+                cur = t
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
         y = rect.centery - len(lines) * 8
         for line in lines[: max(1, rect.height // 16)]:
             surf = self.f_tiny.render(line, True, color)
             s.blit(surf, surf.get_rect(centerx=rect.centerx, y=y))
             y += 16
 
-    def _stats_panel_rect(self):
-        return pygame.Rect(self.stats_x, self.panel_top, self.stats_w, self.panel_h)
-
+    # ---- stats panel -----------------------------------------------------
     def _draw_tabs(self, s, mouse_pos):
         for key, label, rect in self.tab_rects:
-            self._button(rect, label, rect.collidepoint(mouse_pos), on=(self.tab == key))
+            self._button(s, rect, label, rect.collidepoint(mouse_pos), on=(self.tab == key))
 
     def _draw_stats(self, s):
-        s.blit(self.f_small.render("CHARACTER", True, DIM), (self.stats_x, self.panel_top - 26))
         self._draw_tabs(s, pygame.mouse.get_pos())
-        panel = self._stats_panel_rect()
-        pygame.draw.rect(s, PANEL, panel, border_radius=6)
-
+        panel = self.stats_panel
+        self._panel(s, panel)
         entries = [e for e in STAT_REGISTRY if self.tab in (e[2], "all")]
-        s.set_clip(panel)
-        x = panel.x + 14
-        y = panel.y + 12 - self.scroll
+        s.set_clip(panel.inflate(-4, -4))
+        x = panel.x + 16
+        y = panel.y + 14 - self.scroll
         for path, label, _cat, fmt in entries:
             stat = resolve_stat(self.character.stats, path)
             if panel.y - 24 <= y <= panel.bottom:
                 s.blit(self.f_small.render(label, True, DIM), (x, y))
-                vsurf = self.f_small.render(fmt_stat(stat, fmt), True, TEXT)
-                s.blit(vsurf, vsurf.get_rect(right=panel.right - 14, y=y))
-            y += 26
+                vs = self.f_small.render(fmt_stat(stat, fmt), True, TEXT)
+                s.blit(vs, vs.get_rect(right=panel.right - 16, y=y))
+            y += 27
         s.set_clip(None)
-        self._content_h = len(entries) * 26 + 24
-        self._clamp_scroll("scroll", panel.height)
+        self._content_h = len(entries) * 27 + 28
+        self._clamp("scroll", panel.height)
 
-    def _clamp_scroll(self, attr, view_h):
-        max_scroll = max(0, self._content_h - view_h)
-        setattr(self, attr, min(getattr(self, attr), max_scroll))
+    def _clamp(self, attr, view_h):
+        setattr(self, attr, min(getattr(self, attr), max(0, self._content_h - view_h)))
 
-    # -- debug breakdown ---------------------------------------------------
+    # ---- debug -----------------------------------------------------------
     def _draw_debug(self, s):
-        s.blit(self.f_small.render("DEBUG — STAT BREAKDOWN", True, ACCENT),
-               (self.stats_x, self.panel_top - 26))
-        panel = self._stats_panel_rect()
-        pygame.draw.rect(s, PANEL, panel, border_radius=6)
+        panel = self.stats_panel
+        self._panel(s, panel)
         if self.debug_stat is None:
             self._draw_debug_list(s, panel)
         else:
             self._draw_debug_detail(s, panel)
 
     def _draw_debug_list(self, s, panel):
-        s.set_clip(panel)
+        s.set_clip(panel.inflate(-4, -4))
         self.dbg_rows = []
-        x, y = panel.x + 12, panel.y + 12 - self.scroll
-        hint = self.f_tiny.render("click a stat to inspect", True, FAINT)
-        s.blit(hint, (x, y))
+        x, y = panel.x + 14, panel.y + 12 - self.scroll
+        s.blit(self.f_tiny.render("click a stat to inspect", True, FAINT), (x, y))
         y += 24
         mouse = pygame.mouse.get_pos()
         for path, label, _cat, fmt in STAT_REGISTRY:
@@ -676,8 +718,8 @@ class InventoryTest:
                 s.blit(vs, vs.get_rect(right=panel.right - 14, y=y))
             y += 26
         s.set_clip(None)
-        self._content_h = len(STAT_REGISTRY) * 26 + 48
-        self._clamp_scroll("scroll", panel.height)
+        self._content_h = len(STAT_REGISTRY) * 26 + 44
+        self._clamp("scroll", panel.height)
 
     def _breakdown(self):
         eq = self.character.equipments
@@ -689,19 +731,15 @@ class InventoryTest:
 
     def _draw_debug_detail(self, s, panel):
         bd = self._breakdown()
-        label = next((e[1] for e in STAT_REGISTRY if e[0] == self.debug_stat),
-                     self.debug_stat)
-        # No stat rows are clickable in detail view (prevents click-through).
+        label = next((e[1] for e in STAT_REGISTRY if e[0] == self.debug_stat), self.debug_stat)
         self.dbg_rows = []
-
-        # Clickable "back" button pinned to the top of the panel.
         self.back_rect = pygame.Rect(panel.x + 6, panel.y + 6, 150, 26)
         hot = self.back_rect.collidepoint(pygame.mouse.get_pos())
         pygame.draw.rect(s, BTN_HOT if hot else BTN, self.back_rect, border_radius=5)
         s.blit(self.f_tiny.render("‹ back to list", True, TEXT),
                (self.back_rect.x + 10, self.back_rect.y + 6))
 
-        s.set_clip(panel)
+        s.set_clip(panel.inflate(-4, -4))
         x, y = panel.x + 12, panel.y + 40 - self.dbg_scroll
 
         def line(text, color, indent=0, font=None):
@@ -720,76 +758,74 @@ class InventoryTest:
                 if key not in comp:
                     continue
                 val = comp[key]
-                if key in ("positive",):
-                    text, col = f"+{val:g} flat", POS_COLOR
+                if key == "positive":
+                    txt, col = f"+{val:g} flat", GOOD
                 elif key == "negative":
-                    text, col = f"-{val:g} flat", NEG_COLOR
+                    txt, col = f"-{val:g} flat", BAD
                 elif key == "increased":
-                    text, col = f"+{val:g}% increased", POS_COLOR if val >= 0 else NEG_COLOR
+                    txt, col = f"+{val:g}% increased", GOOD if val >= 0 else BAD
                 elif key == "reduced":
-                    text, col = f"-{val:g}% reduced", NEG_COLOR
+                    txt, col = f"-{val:g}% reduced", BAD
                 elif key == "more":
-                    text, col = f"x{val:.3g} more", POS_COLOR
+                    txt, col = f"x{val:.3g} more", GOOD
                 else:
-                    text, col = f"x{val:.3g} less", NEG_COLOR
-                line(text, col, indent=22, font=self.f_tiny)
+                    txt, col = f"x{val:.3g} less", BAD
+                line(txt, col, indent=22, font=self.f_tiny)
             y += 4
         if not bd["sources"]:
             line("(no contributions)", FAINT, indent=12)
-
         y += 6
         pygame.draw.line(s, PANEL_LIGHT, (x, y), (panel.right - 14, y))
         y += 10
         t = bd["totals"]
         line("Combined:", DIM)
-        line(f"flat = {t['positive'] - t['negative']:g}", TEXT, indent=12, font=self.f_tiny)
-        line(f"increased = {t['increased'] - t['reduced']:g}%", TEXT, indent=12, font=self.f_tiny)
-        line(f"more/less = x{t['more'] / t['less']:.3g}", TEXT, indent=12, font=self.f_tiny)
+        line(f"flat = {t['positive'] - t['negative']:g}", TEXT, 12, self.f_tiny)
+        line(f"increased = {t['increased'] - t['reduced']:g}%", TEXT, 12, self.f_tiny)
+        line(f"more/less = x{t['more'] / t['less']:.3g}", TEXT, 12, self.f_tiny)
         y += 6
-        line("(flat) x (1 + inc%) x more", FAINT, font=self.f_tiny)
         flat = t["positive"] - t["negative"]
         incmul = 1 + (t["increased"] - t["reduced"]) / 100
-        line(f"= {flat:g} x {incmul:.3g} x {t['more'] / t['less']:.3g}", TEXT,
-             indent=12, font=self.f_tiny)
-        line(f"= {bd['computed_total']:g}", POS_COLOR, indent=12)
+        line("(flat) x (1 + inc%) x more", FAINT, 0, self.f_tiny)
+        line(f"= {flat:g} x {incmul:.3g} x {t['more'] / t['less']:.3g}", TEXT, 12, self.f_tiny)
+        line(f"= {bd['computed_total']:g}", GOOD, 12)
         if bd["clamp"]:
-            line(f"({bd['clamp']})", NEG_COLOR, indent=12, font=self.f_tiny)
+            line(f"({bd['clamp']})", BAD, 12, self.f_tiny)
         y += 4
         match = abs(bd["computed_total"] - bd["actual_total"]) < 0.05
-        line(f"engine total = {bd['actual_total']:g}  "
-             f"{'[match]' if match else '[MISMATCH]'}",
-             POS_COLOR if match else NEG_COLOR, font=self.f_tiny)
+        line(f"engine total = {bd['actual_total']:g}  {'[match]' if match else '[MISMATCH]'}",
+             GOOD if match else BAD, 0, self.f_tiny)
         s.set_clip(None)
         self._content_h = (y + self.dbg_scroll) - panel.y + 20
-        self._clamp_scroll("dbg_scroll", panel.height)
+        self._clamp("dbg_scroll", panel.height)
 
+    # ---- help / ghost ----------------------------------------------------
     def _draw_help(self, s):
-        help_text = ("Drag items to equip/unequip  •  drag an orb onto a bag item to use it  •  "
-                     "click = equip / select  •  hold Alt = ranges, tiers & affixes  •  Esc = back/quit")
-        s.blit(self.f_small.render(help_text, True, DIM), (40, self.H - 34))
+        txt = ("Drag items to equip / rearrange  •  drag an orb onto an item to use it  •  "
+               "click item = equip  •  hold Alt = ranges, tiers & affixes  •  Esc = back/quit")
+        s.blit(self.f_small.render(txt, True, FAINT), (36, self.H - 32))
 
     def _draw_drag_ghost(self, s, mouse_pos):
-        w, h = 84, 44
+        w, h = 86, 44
         rect = pygame.Rect(0, 0, w, h)
         rect.center = mouse_pos
         ghost = pygame.Surface((w, h), pygame.SRCALPHA)
-        ghost.fill((20, 20, 26, 210))
+        ghost.fill((22, 22, 28, 215))
         pygame.draw.rect(ghost, self.drag["color"], ghost.get_rect(), width=2, border_radius=6)
         label = self.f_tiny.render(str(self.drag["label"]), True, self.drag["color"])
         ghost.blit(label, label.get_rect(center=(w // 2, h // 2)))
         s.blit(ghost, rect)
 
-    # -- tooltip -----------------------------------------------------------
+    # ---- tooltip ---------------------------------------------------------
     def _wrap(self, text, color, max_w, font):
-        out, words, current = [], str(text).split(), ""
-        for word in words:
-            trial = (current + " " + word).strip()
-            if font.size(trial)[0] <= max_w:
-                current = trial
+        out, words, cur = [], str(text).split(), ""
+        for w in words:
+            t = (cur + " " + w).strip()
+            if font.size(t)[0] <= max_w:
+                cur = t
             else:
-                out.append((current, color, font))
-                current = word
-        out.append((current, color, font))
+                out.append((cur, color, font))
+                cur = w
+        out.append((cur, color, font))
         return out
 
     def _tooltip_lines(self, item, show_ranges, max_w):
@@ -802,7 +838,10 @@ class InventoryTest:
             lines.append(("sep", None, None))
 
         push(item.name or "Item", RARITY_COLORS.get(item.rarity.rarity, TEXT), self.f_small)
-        push(f"{item.itemClass}  ·  {item.rarity.rarity.name}", DIM, self.f_tiny)
+        sub = f"{item.itemClass}  ·  {item.rarity.rarity.name}"
+        if getattr(item, "quality", 0):
+            sub += f"  ·  Quality +{item.quality}%"
+        push(sub, DIM, self.f_tiny)
         if item.itemLevel is not None:
             push(f"Item Level: {item.itemLevel}", DIM, self.f_tiny)
         req = self._requirement_text(item)
@@ -841,7 +880,7 @@ class InventoryTest:
             add_block(item.implicits, IMPLICIT_COLOR, "Implicit")
             sep()
             push("Unidentified", (235, 95, 95), self.f_small)
-            push("Use a Scroll of Wisdom to identify.", FAINT, self.f_tiny)
+            push("Drag a Scroll of Wisdom onto it to identify.", FAINT, self.f_tiny)
             return lines
 
         add_block(item.implicits, IMPLICIT_COLOR, "Implicit")
@@ -849,23 +888,17 @@ class InventoryTest:
         add_block(item.suffixes, EXPLICIT_COLOR, "Suffix")
         if not item.implicits and not item.explicits:
             sep()
-            push("(no modifiers)", SLOT_EMPTY_TEXT, self.f_small)
+            push("(no modifiers)", SLOT_EMPTY, self.f_small)
         if not show_ranges:
             push("hold Alt for ranges, tiers & affixes", FAINT, self.f_tiny)
         return lines
 
-    def _currency_tooltip_lines(self, cur, selected):
-        lines = []
-        lines.extend(self._wrap(cur.name, ACCENT, 320, self.f_small))
+    def _currency_tooltip_lines(self, cur):
+        lines = self._wrap(cur.name, ACCENT, 320, self.f_small)
         lines.append((f"Stack: {cur.count} / {cur.max_stack}", DIM, self.f_tiny))
         lines.append(("sep", None, None))
-        lines.extend(self._wrap(cur.description, TEXT, 320, self.f_small))
-        if cur.count <= 0:
-            lines.append(("None left.", NEG_COLOR, self.f_tiny))
-        elif selected:
-            lines.append(("Selected — click a bag item to use it.", POS_COLOR, self.f_tiny))
-        else:
-            lines.append(("Click to select.", FAINT, self.f_tiny))
+        lines += self._wrap(cur.description, TEXT, 320, self.f_small)
+        lines.append(("Drag onto an item to use it.", FAINT, self.f_tiny))
         return lines
 
     @staticmethod
@@ -884,10 +917,10 @@ class InventoryTest:
             order = [("level", "Level"), ("strength", "Str"),
                      ("dexterity", "Dex"), ("intelligence", "Int")]
             parts = []
-            for key, label in order:
+            for key, lbl in order:
                 v = req.get(key)
                 if v:
-                    parts.append(f"Level {v}" if key == "level" else f"{v} {label}")
+                    parts.append(f"Level {v}" if key == "level" else f"{v} {lbl}")
             if parts:
                 return "Requires " + ", ".join(parts)
         if item.dropLevel:
@@ -895,32 +928,25 @@ class InventoryTest:
         return None
 
     def _draw_tooltip(self, s, mouse_pos):
-        # Currency hover takes priority over items.
-        for i, rect in enumerate(self.currency_rects):
-            if rect.collidepoint(mouse_pos):
-                lines = self._currency_tooltip_lines(
-                    self.currency[i], self.selected_currency == i)
-                self._draw_tip_box(s, lines, mouse_pos, ACCENT)
+        entry = self._entry_at(mouse_pos)
+        if entry is not None:
+            if entry.currency:
+                self._draw_tip_box(s, self._currency_tooltip_lines(entry.obj), mouse_pos, ACCENT)
                 return
-
-        target = self.item_at(mouse_pos)
-        if target is None:
-            return
-        kind, value = target
-        item = value if kind == "inv" else getattr(self.character.equipments, value)
+            item = entry.obj
+        else:
+            slot = self._slot_at(mouse_pos)
+            item = getattr(self.character.equipments, slot) if slot else None
         if item is None:
             return
-
         show_ranges = bool(pygame.key.get_mods() & pygame.KMOD_ALT)
         lines = self._tooltip_lines(item, show_ranges, 430)
-        border = RARITY_COLORS.get(item.rarity.rarity, TEXT)
-        self._draw_tip_box(s, lines, mouse_pos, border)
+        self._draw_tip_box(s, lines, mouse_pos, RARITY_COLORS.get(item.rarity.rarity, TEXT))
 
     def _draw_tip_box(self, s, lines, mouse_pos, border):
         pad = 12
-        width = 0
-        height = pad * 2
-        for text, _color, font in lines:
+        width, height = 0, pad * 2
+        for text, _c, font in lines:
             if text == "sep":
                 height += 10
                 continue
@@ -930,20 +956,21 @@ class InventoryTest:
             width = max(width, font.size(text)[0])
             height += font.get_height() + 1
         width += pad * 2
-
         mx, my = mouse_pos
         x = max(8, min(mx + 18, self.W - width - 8))
         y = max(8, min(my + 18, self.H - height - 8))
         box = pygame.Rect(x, y, width, height)
-        pygame.draw.rect(s, (10, 10, 14), box, border_radius=8)
+        shadow = box.move(4, 5)
+        sh = pygame.Surface(shadow.size, pygame.SRCALPHA)
+        sh.fill((0, 0, 0, 110))
+        s.blit(sh, shadow)
+        pygame.draw.rect(s, (12, 12, 16), box, border_radius=8)
         pygame.draw.rect(s, border, box, width=2, border_radius=8)
-
         s.set_clip(box)
         ty = y + pad
         for text, color, font in lines:
             if text == "sep":
-                pygame.draw.line(s, PANEL_LIGHT, (x + pad, ty + 5),
-                                 (x + width - pad, ty + 5))
+                pygame.draw.line(s, PANEL_LIGHT, (x + pad, ty + 5), (x + width - pad, ty + 5))
                 ty += 10
                 continue
             if text == "gap":
@@ -955,7 +982,7 @@ class InventoryTest:
 
 
 # ------------------------------------------------------------------ main ----
-def run(screen, item_count=22, selftest=False):
+def run(screen, item_count=20, selftest=False):
     pygame.display.set_caption("poe_engine — Inventory Test")
     clock = pygame.time.Clock()
     ui = InventoryTest(screen, item_count)
@@ -966,6 +993,10 @@ def run(screen, item_count=22, selftest=False):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.VIDEORESIZE and not selftest:
+                screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
+                ui.screen = screen
+                ui.on_resize(event.w, event.h)
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 if not ui.handle_escape():
                     running = False
@@ -975,8 +1006,6 @@ def run(screen, item_count=22, selftest=False):
                 ui.on_mouse_up(event.pos)
             elif event.type == pygame.MOUSEMOTION:
                 ui.on_mouse_motion(event.pos)
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-                ui.deselect()
             elif event.type == pygame.MOUSEWHEEL:
                 ui.handle_scroll(event.y, pygame.mouse.get_pos())
 
@@ -986,34 +1015,41 @@ def run(screen, item_count=22, selftest=False):
 
         if selftest:
             frames += 1
-            if frames == 2 and ui.inv_rects:               # drag bag item -> slot
-                src = ui.inv_rects[0][1].center
-                ui.on_mouse_down(src)
-                ui.on_mouse_motion((src[0] + 20, src[1] + 20))
-                ui.on_mouse_up(ui.slot_rects["weapon"].center)
+            if frames == 2:
+                items = [e for e in ui.entries if not e.currency]
+                if items:
+                    src = ui._entry_rect(items[0]).center
+                    ui.on_mouse_down(src)
+                    ui.on_mouse_motion((src[0] + 20, src[1] + 20))
+                    ui.on_mouse_up(ui.slot_rects["weapon"].center)
             if frames == 3:
-                ui.handle_click(ui.buttons["debug"].center)  # debug on
+                ui.handle_click(ui.buttons["debug"].center)
             if frames == 4 and ui.dbg_rows:
-                ui.handle_click(ui.dbg_rows[4][1].center)    # inspect a stat
+                ui.handle_click(ui.dbg_rows[4][1].center)
             if frames == 5:
-                ui.handle_escape()                           # back to list
-                ui.handle_click(ui.buttons["debug"].center)  # debug off
-            if frames == 6 and ui.currency_rects and ui.inv_rects:
-                src = ui.currency_rects[0].center            # drag Wisdom -> item
-                ui.on_mouse_down(src)
-                ui.on_mouse_motion((src[0] + 20, src[1]))
-                ui.on_mouse_up(ui.inv_rects[-1][1].center)
+                ui.handle_escape()
+                ui.handle_click(ui.buttons["debug"].center)
+            if frames == 6:
+                cur = next((e for e in ui.entries if e.currency), None)
+                itm = next((e for e in ui.entries if not e.currency), None)
+                if cur and itm:
+                    src = ui._entry_rect(cur).center
+                    ui.on_mouse_down(src)
+                    ui.on_mouse_motion((src[0] + 20, src[1]))
+                    ui.on_mouse_up(ui._entry_rect(itm).center)
             if frames == 7:
-                ui.handle_click(ui.buttons["reload"].center)  # reseed
-            if frames >= 9:
+                ui.on_resize(1280, 760)
+            if frames == 8:
+                ui.handle_click(ui.buttons["reload"].center)
+            if frames >= 10:
                 running = False
 
 
 def main():
     parser = argparse.ArgumentParser(description="poe_engine inventory test bench")
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--items", type=int, default=22)
-    parser.add_argument("--windowed", action="store_true")
+    parser.add_argument("--items", type=int, default=20)
+    parser.add_argument("--fullscreen", action="store_true")
     parser.add_argument("--selftest", action="store_true",
                         help="run headless for a few frames (smoke test)")
     args = parser.parse_args()
@@ -1025,10 +1061,14 @@ def main():
         rng_seed(args.seed)
 
     pygame.init()
-    if args.selftest or args.windowed:
-        screen = pygame.display.set_mode((1366, 768))
-    else:
+    if args.selftest:
+        screen = pygame.display.set_mode((1500, 900))
+    elif args.fullscreen:
         screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    else:
+        info = pygame.display.Info()
+        size = (min(1600, info.current_w - 80), min(950, info.current_h - 120))
+        screen = pygame.display.set_mode(size, pygame.RESIZABLE)
 
     run(screen, item_count=args.items, selftest=args.selftest)
     pygame.quit()
