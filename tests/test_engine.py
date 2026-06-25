@@ -168,6 +168,27 @@ class CombatTests(unittest.TestCase):
         self.assertIsNotNone(winner)
 
 
+class ClassAndLevelTests(unittest.TestCase):
+    def test_classes_have_distinct_starting_attributes(self):
+        marauder = Character("M", char_class="Marauder")
+        witch = Character("W", char_class="Witch")
+        self.assertGreater(marauder.stats.attributes.strength.totalStat,
+                           witch.stats.attributes.strength.totalStat)
+        self.assertGreater(witch.stats.attributes.intelligence.totalStat,
+                           marauder.stats.attributes.intelligence.totalStat)
+
+    def test_characters_start_at_level_one(self):
+        hero = Character("H")
+        self.assertEqual(hero.level, 1)
+
+    def test_level_up_increases_life(self):
+        hero = Character("H", char_class="Marauder")
+        life1 = hero.stats.life.totalStat
+        hero.level_up()
+        self.assertEqual(hero.level, 2)
+        self.assertGreater(hero.stats.life.totalStat, life1)
+
+
 class AnalysisTests(unittest.TestCase):
     def test_mod_tier_bounds(self):
         tier, total = mod_tier("does_not_exist")

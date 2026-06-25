@@ -7,7 +7,7 @@ Public API::
 See ``play.py`` in the project root for a runnable demo.
 """
 
-from .character import BaseCharacter, Character, Monster
+from .character import CLASS_NAMES, CLASSES, BaseCharacter, Character, Monster
 from .combat import attack, hit_chance, simulate_fight
 from .inventory import Inventory
 from .items import (
@@ -20,7 +20,7 @@ from .rng import seed
 from .stats import Stat, Stats
 
 __all__ = [
-    "BaseCharacter", "Character", "Monster",
+    "BaseCharacter", "Character", "Monster", "CLASSES", "CLASS_NAMES",
     "attack", "hit_chance", "simulate_fight",
     "Inventory",
     "Item", "Weapon", "Shield", "Armour", "Helmet", "BodyArmour", "Gloves",
