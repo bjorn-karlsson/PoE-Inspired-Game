@@ -25,25 +25,28 @@ stat system:
 
 ```bash
 pip install pygame
-python inventory_test.py            # fullscreen, random loot
-python inventory_test.py --seed 1   # reproducible loot
-python inventory_test.py --windowed
+python inventory_test.py             # resizable window, random loot
+python inventory_test.py --seed 1    # reproducible loot
+python inventory_test.py --fullscreen
 ```
 
-- Inventory grid + equipment paper-doll; items show their **type** (the full
-  name is in the tooltip).
-- **Drag and drop**: drag a bag item onto the paper-doll to **equip** (auto-routed
-  to the right slot), drag an equipped item back to the bag to **unequip**, and
-  drag a currency orb onto a bag item to **use** it. Clicking still works too.
-- Hover any item for a PoE-style tooltip (item level, requirements, properties,
-  mods). **Hold Alt** to also see each mod's **affix type** (implicit / prefix /
-  suffix), affix name, **tier** and value **range**. Tiers are **contextual to
-  the base type**, matching the in-game tier numbers.
-- **Currency** (12 orbs): Magic-and-better items drop **unidentified** (marked
-  `?`); a **Scroll of Wisdom** identifies them. Transmutation / Augmentation /
-  Alteration / Regal / Alchemy / Chaos / Exalted / Divine / Blessed / Annulment
-  / Scouring each follow PoE-style crafting rules. Click an orb to select it (or
-  drag it); right-click / Esc cancels.
+- **Resizable** window; equipment paper-doll + a grid inventory that holds both
+  items and stackable currency. Items show their **type** (full name in tooltip).
+- **Drag and drop**: drag a bag item onto the paper-doll to **equip** (only items
+  that have a slot; auto-routed), drag equipped items back to **unequip**, drag
+  items around the bag to **rearrange**, and drag a **currency orb onto an item**
+  to use it. Clicking an item also equips it.
+- Items contribute their **base defences / weapon damage** (scaled by quality) on
+  top of their mods, so gear actually changes your defences.
+- Hover any item for a PoE-style tooltip (item level, **quality**, requirements,
+  properties, mods). **Hold Alt** to also see each mod's **affix type** (implicit
+  / prefix / suffix), affix name, **tier** and value **range**. Tiers are
+  **contextual to the base type**, matching the in-game tier numbers.
+- **Currency** (14 orbs) lives in the inventory: Scroll of Wisdom, Transmutation,
+  Augmentation, Alteration, Regal, Alchemy, Chaos, Exalted, Divine, Blessed,
+  Annulment, Scouring, plus **Blacksmith's Whetstone** / **Armourer's Scrap** for
+  quality. Magic-and-better items drop **unidentified** (`?`). Stripping a Rare's
+  last mod (Annulment/Scouring) drops it back to a white item.
 - Stats panel with selectable **tabs** (Defense / Offense / Attributes / All)
   and mouse-wheel **scrolling**.
 - **New Loot (reseed)** button rerolls everything with a fresh random seed.

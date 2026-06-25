@@ -10,8 +10,9 @@ from poe_engine import Character, Monster, Stats, seed
 from poe_engine.analysis import mod_tier, stat_breakdown
 from poe_engine.combat import attack, hit_chance, simulate_fight
 from poe_engine.currency import (
-    ChaosOrb, DivineOrb, ExaltedOrb, OrbOfAlchemy, OrbOfScouring,
-    OrbOfTransmutation, RegalOrb, ScrollOfWisdom,
+    ArmourersScrap, BlacksmithsWhetstone, ChaosOrb, DivineOrb, ExaltedOrb,
+    OrbOfAlchemy, OrbOfAnnulment, OrbOfScouring, OrbOfTransmutation, RegalOrb,
+    ScrollOfWisdom,
 )
 from poe_engine.inventory import Inventory
 from poe_engine.items import Item, Ring
@@ -288,6 +289,59 @@ class CraftingTests(unittest.TestCase):
         self.assertTrue(OrbOfScouring().use_on(item))
         self.assertEqual(item.rarity.rarity, Rarities.NORMAL)
         self.assertEqual(item.explicits, [])
+
+
+class QualityTests(unittest.TestCase):
+    def test_whetstone_only_on_weapons(self):
+        weapon = Item.generate(drop_level=70, item_class="One Hand Sword")
+        ring = Item.generate(drop_level=70, item_class="Ring")
+        self.assertEqual(weapon.quality_type, "weapon")
+        self.assertIsNone(ring.quality_type)
+        self.assertTrue(BlacksmithsWhetstone().use_on(weapon))
+        self.assertEqual(weapon.quality, 5)
+        self.assertFalse(BlacksmithsWhetstone().use_on(ring))
+
+    def test_quality_caps_at_20_and_boosts_damage(self):
+        weapon = Item.generate(drop_level=70, item_class="One Hand Sword")
+        base_dmg = weapon.build_stats().physicalDamage.positiveStat
+        scrap = BlacksmithsWhetstone(count=10)
+        for _ in range(10):
+            scrap.use_on(weapon)
+        self.assertEqual(weapon.quality, 20)
+        self.assertGreater(weapon.build_stats().physicalDamage.positiveStat, base_dmg)
+
+    def test_armour_base_grants_defence(self):
+        seed(3)
+        # Body armours always carry at least one of armour/evasion/ES.
+        item = Item.generate(drop_level=70, item_class="Body Armour")
+        sheet = item.build_stats()
+        total = (sheet.armour.positiveStat + sheet.evasion.positiveStat
+                 + sheet.energyShield.positiveStat)
+        self.assertGreater(total, 0)
+
+
+class RarityDowngradeTests(unittest.TestCase):
+    def test_annul_to_zero_becomes_normal(self):
+        rare = _generate_until(Rarities.RARE, drop_level=78, rarity_bonus=20)
+        rare.identified = True
+        annul = OrbOfAnnulment(count=20)
+        for _ in range(20):
+            if not rare.explicits:
+                break
+            annul.use_on(rare)
+        self.assertEqual(rare.explicits, [])
+        self.assertEqual(rare.rarity.rarity, Rarities.NORMAL)
+
+
+class DropRateTests(unittest.TestCase):
+    def test_uniques_are_much_rarer_than_rares(self):
+        seed(123)
+        counts = {r: 0 for r in Rarities}
+        for _ in range(3000):
+            counts[Item.generate(drop_level=70, rarity_bonus=20).rarity.rarity] += 1
+        self.assertGreater(counts[Rarities.RARE], counts[Rarities.UNIQUE] * 5)
+        self.assertGreater(counts[Rarities.MAGIC], counts[Rarities.RARE])
+        self.assertLess(counts[Rarities.UNIQUE], 90)  # < ~3% of drops
 
 
 class TierTests(unittest.TestCase):
