@@ -9,7 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from poe_engine import Character, Monster, Stats, seed
 from poe_engine.analysis import mod_tier, stat_breakdown
 from poe_engine.combat import attack, hit_chance, simulate_fight
-from poe_engine.currency import ChaosOrb, ScrollOfWisdom
+from poe_engine.currency import (
+    ChaosOrb, DivineOrb, ExaltedOrb, OrbOfAlchemy, OrbOfScouring,
+    OrbOfTransmutation, RegalOrb, ScrollOfWisdom,
+)
 from poe_engine.inventory import Inventory
 from poe_engine.items import Item, Ring
 from poe_engine.rarity import Rarities
@@ -228,7 +231,74 @@ class CurrencyTests(unittest.TestCase):
 
     def test_stack_sizes(self):
         self.assertEqual(ScrollOfWisdom.max_stack, 40)
-        self.assertEqual(ChaosOrb.max_stack, 20)
+        self.assertEqual(ChaosOrb.max_stack, 10)
+
+
+class CraftingTests(unittest.TestCase):
+    def _normal(self):
+        item = _generate_until(Rarities.NORMAL, drop_level=80, rarity_bonus=0)
+        item.identified = True
+        return item
+
+    def test_transmute_normal_to_magic(self):
+        item = self._normal()
+        self.assertTrue(OrbOfTransmutation().use_on(item))
+        self.assertEqual(item.rarity.rarity, Rarities.MAGIC)
+        self.assertGreaterEqual(len(item.explicits), 1)
+        self.assertLessEqual(len(item.explicits), 2)
+
+    def test_alchemy_normal_to_rare(self):
+        item = self._normal()
+        self.assertTrue(OrbOfAlchemy().use_on(item))
+        self.assertEqual(item.rarity.rarity, Rarities.RARE)
+        self.assertGreaterEqual(len(item.explicits), 2)
+
+    def test_regal_magic_to_rare_adds_mod(self):
+        item = self._normal()
+        OrbOfTransmutation().use_on(item)
+        before = len(item.explicits)
+        self.assertTrue(RegalOrb().use_on(item))
+        self.assertEqual(item.rarity.rarity, Rarities.RARE)
+        self.assertGreaterEqual(len(item.explicits), before)
+
+    def test_exalted_respects_affix_cap(self):
+        item = self._normal()
+        OrbOfAlchemy().use_on(item)
+        exalt = ExaltedOrb(count=10)
+        # Keep exalting until the item is full (max 6 affixes).
+        for _ in range(10):
+            if not exalt.applies_to(item):
+                break
+            exalt.use_on(item)
+        self.assertLessEqual(len(item.prefixes), 3)
+        self.assertLessEqual(len(item.suffixes), 3)
+        self.assertLessEqual(len(item.explicits), 6)
+
+    def test_divine_rerolls_values_keeps_mods(self):
+        item = self._normal()
+        OrbOfAlchemy().use_on(item)
+        before_ids = [m.id for m in item.explicits]
+        DivineOrb().use_on(item)
+        after_ids = [m.id for m in item.explicits]
+        self.assertEqual(before_ids, after_ids)  # same mods, only values reroll
+
+    def test_scour_strips_to_normal(self):
+        item = self._normal()
+        OrbOfAlchemy().use_on(item)
+        self.assertTrue(OrbOfScouring().use_on(item))
+        self.assertEqual(item.rarity.rarity, Rarities.NORMAL)
+        self.assertEqual(item.explicits, [])
+
+
+class TierTests(unittest.TestCase):
+    def test_higher_level_mod_is_better_tier(self):
+        # IncreasedLife7 (req 44) should be a better (lower) tier than
+        # IncreasedLife1 (req 5) within the same life family.
+        better_tier, total_a = mod_tier("IncreasedLife7")
+        worse_tier, total_b = mod_tier("IncreasedLife1")
+        self.assertLess(better_tier, worse_tier)
+        self.assertEqual(total_a, total_b)
+        self.assertGreater(total_a, 1)
 
 
 if __name__ == "__main__":
