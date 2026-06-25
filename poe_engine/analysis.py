@@ -140,8 +140,13 @@ def stat_breakdown(character, path) -> dict:
     """Build a full, source-by-source breakdown of ``character.stats[path]``."""
     sources = []
 
-    # Base: a fresh, equipment-free character of the same kind/level.
-    base_char = type(character)(character.name, character.level)
+    # Base: a fresh, equipment-free character of the same kind/class/level.
+    try:
+        base_char = type(character)(character.name,
+                                    char_class=getattr(character, "char_class"),
+                                    level=character.level)
+    except (TypeError, AttributeError):
+        base_char = type(character)(character.name, level=character.level)
     base_components = component_dict(resolve_stat(base_char.stats, path))
     if base_components:
         sources.append({"name": "Base character", "components": base_components})

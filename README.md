@@ -32,10 +32,14 @@ python inventory_test.py --fullscreen
 
 - **Resizable** window; equipment paper-doll + a grid inventory that holds both
   items and stackable currency. Items show their **type** (full name in tooltip).
-- **Drag and drop**: drag a bag item onto the paper-doll to **equip** (only items
-  that have a slot; auto-routed), drag equipped items back to **unequip**, drag
-  items around the bag to **rearrange**, and drag a **currency orb onto an item**
-  to use it. Clicking an item also equips it.
+- **Playable classes** (Marauder / Ranger / Witch / Duelist / Templar / Shadow /
+  Scion) with different starting attributes; everyone starts at **level 1**. The
+  toolbar has a **Class** button (cycles, resets to level 1) and **Level +1**.
+- **Controls** (Path-of-Exile style): *left-click* an item to **pick it up** onto
+  the cursor, left-click again to **place / equip / swap** it; *right-click* an
+  item to **equip** (or a slot to unequip); *right-click an orb* to **ready it**
+  on the cursor, then *left-click items* to apply it — it stays ready until you
+  right-click / Esc to cancel. You can't equip **unidentified** items.
 - Items contribute their **base defences / weapon damage** (scaled by quality) on
   top of their mods, so gear actually changes your defences.
 - Hover any item for a PoE-style tooltip (item level, **quality**, requirements,

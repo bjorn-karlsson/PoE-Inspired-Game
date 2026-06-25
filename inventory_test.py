@@ -27,7 +27,7 @@ import random as _random
 
 import pygame
 
-from poe_engine import Character
+from poe_engine import CLASS_NAMES, Character
 from poe_engine.analysis import mod_tier, resolve_stat, stat_breakdown
 from poe_engine.currency import starter_currency
 from poe_engine.items import SLOTS, Item
@@ -193,11 +193,14 @@ class InventoryTest:
         self.f = pygame.font.Font(None, 26)
         self.f_big = pygame.font.Font(None, 38)
 
-        self.character = Character("Exile", level=20)
+        self.char_class = "Marauder"
+        self.character = Character("Exile", char_class=self.char_class, level=1)
         self.entries = []
 
         # UI state
         self.tab = "def"
+        self.cursor_item = None       # Entry picked up onto the cursor (move/equip)
+        self.cursor_currency = None   # currency Entry readied on the cursor
         self.scroll = 0
         self.debug_mode = False
         self.debug_stat = None
@@ -207,13 +210,6 @@ class InventoryTest:
         self._bd_sig = None
         self.status_text = ""
         self.status_timer = 0
-
-        # drag state
-        self._press_pos = None
-        self._press_target = None     # ("entry", Entry) | ("slot", name)
-        self._dragging = False
-        self.drag = None              # {"label","color"}
-        self._grab_offset = (0, 0)
 
         self.slot_rects = {}
         self.buttons = {}
@@ -273,11 +269,18 @@ class InventoryTest:
 
         # toolbar buttons (top-right, clear of the section headers)
         self.buttons = {}
-        bw1 = self.f_small.size("New Loot")[0] + 28
-        bw2 = self.f_small.size("Debug: OFF")[0] + 28
-        bx = self.W - margin - bw2
-        self.buttons["debug"] = pygame.Rect(bx, 34, bw2, 34)
-        self.buttons["reload"] = pygame.Rect(bx - bw1 - 12, 34, bw1, 34)
+        defs = [
+            ("debug", f"Debug: {'ON' if self.debug_mode else 'OFF'}"),
+            ("reload", "New Loot"),
+            ("levelup", "Level +1"),
+            ("class", f"Class: {self.char_class}"),
+        ]
+        x = self.W - margin
+        for name, label in defs:
+            w = self.f_small.size(label)[0] + 24
+            x -= w
+            self.buttons[name] = pygame.Rect(x, 34, w, 34)
+            x -= 10
 
         # stat tabs
         self.tab_rects = []
@@ -345,82 +348,124 @@ class InventoryTest:
     def _equippable(self, item):
         return self.character.equipments.slot_for(item) is not None
 
-    # ===================================================== interaction =======
-    def on_mouse_down(self, pos):
-        self._press_pos = pos
-        self._dragging = False
-        self._press_target = None
-        entry = self._entry_at(pos)
-        if entry is not None:
-            self._press_target = ("entry", entry)
-            r = self._entry_rect(entry)
-            self._grab_offset = (pos[0] - r.x, pos[1] - r.y)
-            return
-        for slot, rect in self.slot_rects.items():
-            if rect.collidepoint(pos) and getattr(self.character.equipments, slot):
-                self._press_target = ("slot", slot)
-                self._grab_offset = (rect.width // 2, rect.height // 2)
-                return
-
-    def on_mouse_motion(self, pos):
-        if self._press_pos and not self._dragging and self._press_target:
-            if abs(pos[0] - self._press_pos[0]) + abs(pos[1] - self._press_pos[1]) > 6:
-                self._dragging = True
-                self.drag = self._make_drag(self._press_target)
-
-    def on_mouse_up(self, pos):
-        if self._dragging:
-            self._drop(pos)
-        elif self._press_pos is not None:
-            self.handle_click(self._press_pos)
-        self._press_pos = self._press_target = None
-        self._dragging = False
-        self.drag = None
-
-    def _make_drag(self, target):
-        kind, value = target
-        if kind == "slot":
-            item = getattr(self.character.equipments, value)
-            return {"label": item.itemClass, "color": RARITY_COLORS.get(item.rarity.rarity, TEXT)}
-        entry = value
-        if entry.currency:
-            return {"label": orb_abbrev(entry.obj.name), "color": orb_color(entry.obj.name)}
-        return {"label": entry.obj.itemClass,
-                "color": RARITY_COLORS.get(entry.obj.rarity.rarity, TEXT)}
-
-    def _drop(self, pos):
-        kind, value = self._press_target
-        if kind == "slot":
-            if self.inv_panel.collidepoint(pos):
-                self._unequip(value, pos)
-            return
-        entry = value
-        slot = self._slot_at(pos)
-        if slot is not None and not entry.currency:
-            self._equip(entry)
-            return
-        target = self._entry_at(pos)
-        if entry.currency and target is not None and not target.currency:
-            self._use_currency(entry, target.obj)
-            return
-        if self.inv_panel.collidepoint(pos):
-            self._move_entry(entry, pos)
-
     def _slot_at(self, pos):
         for slot, rect in self.slot_rects.items():
             if rect.collidepoint(pos):
                 return slot
         return None
 
-    def _move_entry(self, entry, pos):
-        tx = pos[0] - self._grab_offset[0] + self.inv_cell // 2
-        ty = pos[1] - self._grab_offset[1] + self.inv_cell // 2
-        gx, gy = self._cell_at((tx, ty))
-        if self._fits(entry, gx, gy):
-            entry.x, entry.y = gx, gy
+    # ===================================================== interaction =======
+    # Path-of-Exile-style mouse model:
+    #   Left-click  -> pick an item up onto the cursor; left-click again to place
+    #                  it (empty cell, equipment slot, or swap). While a currency
+    #                  orb is on the cursor, left-click an item to use it.
+    #   Right-click -> action: equip an item / unequip a slot; right-click a
+    #                  currency to put it on the cursor (then left-click items to
+    #                  apply it -- it stays until you right-click / Esc to cancel).
+    def on_left_down(self, pos):
+        if self._ui_click(pos):
+            return
+        if self.cursor_currency is not None:
+            target = self._entry_at(pos)
+            if target is not None and not target.currency:
+                self._apply_currency(target.obj)
+            return
+        if self.cursor_item is not None:
+            self._place_cursor_item(pos)
+            return
+        # empty hand: pick something up
+        entry = self._entry_at(pos)
+        if entry is not None:
+            self.entries.remove(entry)
+            self.cursor_item = entry
+            return
+        slot = self._slot_at(pos)
+        if slot and getattr(self.character.equipments, slot):
+            item = getattr(self.character.equipments, slot)
+            self.character.unequip(slot)
+            self._invalidate()
+            self.cursor_item = Entry(item)
 
-    def _equip(self, entry):
+    def on_right_down(self, pos):
+        if self.cursor_item is not None:
+            self._return_cursor_item()
+            return
+        if self.cursor_currency is not None:
+            self.cursor_currency = None
+            return
+        if self._ui_click(pos):
+            return
+        entry = self._entry_at(pos)
+        if entry is not None:
+            if entry.currency:
+                self.cursor_currency = entry
+                self._flash(f"{entry.obj.name} ready — left-click an item "
+                            f"(right-click / Esc to cancel)")
+            else:
+                self._quick_equip(entry)
+            return
+        slot = self._slot_at(pos)
+        if slot and getattr(self.character.equipments, slot):
+            self._unequip(slot)
+
+    # -- cursor item (move / equip / swap) ---------------------------------
+    def _place_cursor_item(self, pos):
+        entry = self.cursor_item
         item = entry.obj
+        slot = self._slot_at(pos)
+        if slot is not None:
+            if self._try_equip_cursor(item):
+                return
+        if self.inv_panel.collidepoint(pos):
+            gx, gy = self._cell_at(pos)
+            if self._fits(entry, gx, gy):
+                entry.x, entry.y = gx, gy
+                self.entries.append(entry)
+                self.cursor_item = None
+                return
+            self._try_swap(entry, pos)
+        # clicked elsewhere: keep holding the item
+
+    def _try_equip_cursor(self, item):
+        if not item.identified:
+            self._flash("Identify the item first (Scroll of Wisdom)")
+            return True
+        if not self._equippable(item):
+            self._flash(f"{item.itemClass} can't be equipped there")
+            return True
+        replaced = self.character.equip(item)
+        self._invalidate()
+        self.cursor_item = Entry(replaced) if replaced is not None else None
+        return True
+
+    def _try_swap(self, entry, pos):
+        occ = self._entry_at(pos)
+        if occ is None or occ.currency:
+            self._flash("Doesn't fit there")
+            return
+        ox, oy = occ.x, occ.y
+        self.entries.remove(occ)
+        if self._fits(entry, ox, oy):
+            entry.x, entry.y = ox, oy
+            self.entries.append(entry)
+            self.cursor_item = occ  # swapped item goes to the cursor
+        else:
+            self.entries.append(occ)
+            self._flash("Doesn't fit there")
+
+    def _return_cursor_item(self):
+        if self._place(self.cursor_item):
+            self.entries.append(self.cursor_item)
+            self.cursor_item = None
+        else:
+            self._flash("No room to drop it")
+
+    # -- equipment / currency ----------------------------------------------
+    def _quick_equip(self, entry):
+        item = entry.obj
+        if not item.identified:
+            self._flash("Identify the item first (Scroll of Wisdom)")
+            return
         if not self._equippable(item):
             self._flash(f"{item.itemClass} can't be equipped")
             return
@@ -430,69 +475,83 @@ class InventoryTest:
             self._add_to_bag(replaced)
         self._invalidate()
 
-    def _unequip(self, slot, pos=None):
+    def _unequip(self, slot):
         item = getattr(self.character.equipments, slot)
         if item is None:
             return
         self.character.unequip(slot)
-        self._add_to_bag(item, pos)
+        self._add_to_bag(item)
         self._invalidate()
 
-    def _add_to_bag(self, item, pos=None):
+    def _add_to_bag(self, item):
         entry = Entry(item)
-        if pos is not None and self.inv_panel.collidepoint(pos):
-            gx, gy = self._cell_at(pos)
-            if self._fits(entry, gx, gy):
-                entry.x, entry.y = gx, gy
-                self.entries.append(entry)
-                return
         if not self._place(entry):
             self._flash("No room in inventory")
             return
         self.entries.append(entry)
 
-    def _use_currency(self, currency_entry, item):
-        cur = currency_entry.obj
+    def _apply_currency(self, item):
+        entry = self.cursor_currency
+        cur = entry.obj
         if cur.use_on(item):
             self._flash(f"{cur.name} used on {item.name}")
             self._invalidate()
+            if cur.count <= 0:
+                if entry in self.entries:
+                    self.entries.remove(entry)
+                self.cursor_currency = None
+            # otherwise the orb stays on the cursor (PoE-style repeat use)
         else:
             self._flash(f"{cur.name}: {cur.reason(item)}")
-        if cur.count <= 0 and currency_entry in self.entries:
-            self.entries.remove(currency_entry)
 
-    def handle_click(self, pos):
-        if self.buttons["reload"].collidepoint(pos):
-            return self.reload_loot()
-        if self.buttons["debug"].collidepoint(pos):
-            self.debug_mode = not self.debug_mode
-            self.debug_stat = None
-            self.scroll = self.dbg_scroll = 0
-            return
+    def _ui_click(self, pos):
+        """Handle clicks on toolbar / tabs / debug rows. Returns True if used."""
+        for name, fn in (("reload", self.reload_loot), ("debug", self._toggle_debug),
+                         ("levelup", self._level_up), ("class", self._cycle_class)):
+            if self.buttons[name].collidepoint(pos):
+                fn()
+                return True
         for key, _, rect in self.tab_rects:
             if rect.collidepoint(pos):
                 self.tab, self.scroll = key, 0
-                return
+                return True
         if self.debug_mode and self.debug_stat is not None:
             if self.back_rect and self.back_rect.collidepoint(pos):
                 self.debug_stat = None
                 self.dbg_scroll = 0
-            return
+            return True
         if self.debug_mode:
             for path, rect in self.dbg_rows:
                 if rect.collidepoint(pos):
                     self.debug_stat = path
                     self.dbg_scroll = 0
-                    return
-            return
-        # quick equip / unequip on click
-        entry = self._entry_at(pos)
-        if entry is not None and not entry.currency:
-            self._equip(entry)
-            return
-        slot = self._slot_at(pos)
-        if slot and getattr(self.character.equipments, slot):
-            self._unequip(slot)
+                    return True
+            return True  # swallow clicks inside debug panel
+        return False
+
+    def _toggle_debug(self):
+        self.debug_mode = not self.debug_mode
+        self.debug_stat = None
+        self.scroll = self.dbg_scroll = 0
+
+    def _level_up(self):
+        self.character.level_up()
+        self._invalidate()
+        self._flash(f"Levelled up to {self.character.level}")
+
+    def _cycle_class(self):
+        self.cursor_item = self.cursor_currency = None
+        self._unequip_all()
+        idx = (CLASS_NAMES.index(self.char_class) + 1) % len(CLASS_NAMES)
+        self.char_class = CLASS_NAMES[idx]
+        self.character = Character("Exile", char_class=self.char_class, level=1)
+        self._invalidate()
+        self._flash(f"Class: {self.char_class} (reset to level 1)")
+
+    def _unequip_all(self):
+        for slot in list(SLOTS):
+            if getattr(self.character.equipments, slot):
+                self._unequip(slot)
 
     def handle_scroll(self, dy, pos):
         if self.stats_panel.collidepoint(pos):
@@ -503,6 +562,12 @@ class InventoryTest:
                 self.scroll = max(0, self.scroll - dy * step)
 
     def handle_escape(self):
+        if self.cursor_item is not None:
+            self._return_cursor_item()
+            return True
+        if self.cursor_currency is not None:
+            self.cursor_currency = None
+            return True
         if self.debug_mode and self.debug_stat is not None:
             self.debug_stat = None
             return True
@@ -513,8 +578,10 @@ class InventoryTest:
 
     def reload_loot(self):
         rng_seed(_random.randrange(1 << 30))
-        self.character = Character("Exile", level=20)
+        self.character = Character("Exile", char_class=self.char_class, level=1)
         self.debug_stat = None
+        self.cursor_item = None
+        self.cursor_currency = None
         self.scroll = self.dbg_scroll = 0
         self._invalidate()
         self._fill_bag()
@@ -533,8 +600,9 @@ class InventoryTest:
         s.blit(self.bg, (0, 0))
 
         s.blit(self.f_big.render(f"{self.character.name}", True, ACCENT), (36, 30))
-        lvl = self.f_small.render(f"Level {self.character.level}  ·  Inventory Test",
-                                  True, DIM)
+        lvl = self.f_small.render(
+            f"{self.char_class}  ·  Level {self.character.level}  ·  Inventory Test",
+            True, DIM)
         s.blit(lvl, (36, 70))
 
         self._draw_toolbar(mouse_pos)
@@ -551,8 +619,11 @@ class InventoryTest:
         self._draw_inventory(s, mouse_pos)
 
         self._draw_help(s)
-        if self._dragging and self.drag:
-            self._draw_drag_ghost(s, mouse_pos)
+        if self.cursor_item is not None:
+            self._draw_item_cursor(s, mouse_pos)
+        elif self.cursor_currency is not None:
+            self._draw_tooltip(s, mouse_pos)
+            self._draw_orb_cursor(s, mouse_pos)
         else:
             self._draw_tooltip(s, mouse_pos)
 
@@ -579,11 +650,13 @@ class InventoryTest:
 
     def _draw_toolbar(self, mouse_pos):
         s = self.screen
-        r = self.buttons["reload"]
-        self._button(s, r, "New Loot", r.collidepoint(mouse_pos))
-        d = self.buttons["debug"]
-        self._button(s, d, f"Debug: {'ON' if self.debug_mode else 'OFF'}",
-                     d.collidepoint(mouse_pos), on=self.debug_mode)
+        b = self.buttons
+        self._button(s, b["class"], f"Class: {self.char_class}",
+                     b["class"].collidepoint(mouse_pos))
+        self._button(s, b["levelup"], "Level +1", b["levelup"].collidepoint(mouse_pos))
+        self._button(s, b["reload"], "New Loot", b["reload"].collidepoint(mouse_pos))
+        self._button(s, b["debug"], f"Debug: {'ON' if self.debug_mode else 'OFF'}",
+                     b["debug"].collidepoint(mouse_pos), on=self.debug_mode)
 
     def _draw_doll(self, s):
         self._panel(s, self.doll_panel)
@@ -608,8 +681,6 @@ class InventoryTest:
             y = oy + r * self.inv_cell
             pygame.draw.line(s, (38, 39, 50), (ox, y), (grid.right, y))
         for entry in self.entries:
-            if self._dragging and self._press_target == ("entry", entry):
-                continue
             rect = self._entry_rect(entry)
             if entry.currency:
                 self._draw_currency_icon(s, entry.obj, rect)
@@ -800,20 +871,31 @@ class InventoryTest:
 
     # ---- help / ghost ----------------------------------------------------
     def _draw_help(self, s):
-        txt = ("Drag items to equip / rearrange  •  drag an orb onto an item to use it  •  "
-               "click item = equip  •  hold Alt = ranges, tiers & affixes  •  Esc = back/quit")
+        txt = ("Left-click = pick up / place item  •  Right-click item = equip/unequip  •  "
+               "Right-click orb = ready it, then left-click items to apply  •  "
+               "Alt = ranges/tiers  •  Esc = cancel/back")
         s.blit(self.f_small.render(txt, True, FAINT), (36, self.H - 32))
 
-    def _draw_drag_ghost(self, s, mouse_pos):
-        w, h = 86, 44
+    def _draw_item_cursor(self, s, mouse_pos):
+        item = self.cursor_item.obj
+        w, h = self.cursor_item.w * 44, self.cursor_item.h * 44
         rect = pygame.Rect(0, 0, w, h)
         rect.center = mouse_pos
         ghost = pygame.Surface((w, h), pygame.SRCALPHA)
-        ghost.fill((22, 22, 28, 215))
-        pygame.draw.rect(ghost, self.drag["color"], ghost.get_rect(), width=2, border_radius=6)
-        label = self.f_tiny.render(str(self.drag["label"]), True, self.drag["color"])
+        ghost.fill((22, 22, 28, 220))
+        color = RARITY_COLORS.get(item.rarity.rarity, TEXT)
+        pygame.draw.rect(ghost, color, ghost.get_rect(), width=2, border_radius=6)
+        label = self.f_tiny.render(item.itemClass, True, color)
         ghost.blit(label, label.get_rect(center=(w // 2, h // 2)))
         s.blit(ghost, rect)
+
+    def _draw_orb_cursor(self, s, mouse_pos):
+        cur = self.cursor_currency.obj
+        cx, cy = mouse_pos[0] + 16, mouse_pos[1] + 16
+        pygame.draw.circle(s, orb_color(cur.name), (cx, cy), 15)
+        pygame.draw.circle(s, (240, 236, 222), (cx - 5, cy - 5), 4)
+        abbr = self.f_tiny.render(orb_abbrev(cur.name), True, (20, 18, 14))
+        s.blit(abbr, abbr.get_rect(center=(cx, cy + 1)))
 
     # ---- tooltip ---------------------------------------------------------
     def _wrap(self, text, color, max_w, font):
@@ -847,8 +929,8 @@ class InventoryTest:
         req = self._requirement_text(item)
         if req:
             push(req, DIM, self.f_tiny)
-        for key, val in (item.properties or {}).items():
-            push(f"{prettify(str(key)).title()}: {self._fmt_prop(val)}", FAINT, self.f_tiny)
+        for line in self._property_lines(item):
+            push(line, FAINT, self.f_tiny)
 
         def add_block(mods, color, kind):
             if not mods:
@@ -880,7 +962,8 @@ class InventoryTest:
             add_block(item.implicits, IMPLICIT_COLOR, "Implicit")
             sep()
             push("Unidentified", (235, 95, 95), self.f_small)
-            push("Drag a Scroll of Wisdom onto it to identify.", FAINT, self.f_tiny)
+            push("Right-click a Scroll of Wisdom, then left-click this item.",
+                 FAINT, self.f_tiny)
             return lines
 
         add_block(item.implicits, IMPLICIT_COLOR, "Implicit")
@@ -902,13 +985,33 @@ class InventoryTest:
         return lines
 
     @staticmethod
-    def _fmt_prop(val):
-        if isinstance(val, dict):
-            lo, hi = val.get("min"), val.get("max")
-            if lo is not None and hi is not None:
-                return f"{lo}–{hi}" if lo != hi else f"{lo}"
-            return ", ".join(f"{k} {v}" for k, v in val.items())
-        return str(val)
+    def _property_lines(item):
+        """Readable, quality-adjusted base properties for the tooltip."""
+        props = item.properties or {}
+        q = 1 + item.quality / 100
+        note = f"  (incl. {item.quality}% quality)" if item.quality else ""
+        out = []
+
+        def mid(v):
+            return (v.get("min", 0) + v.get("max", 0)) / 2 if isinstance(v, dict) else v
+
+        for key, label in (("armour", "Armour"), ("evasion", "Evasion"),
+                           ("energy_shield", "Energy Shield")):
+            if key in props:
+                out.append(f"{label}: {round(mid(props[key]) * q)}{note}")
+        if "physical_damage_min" in props and "physical_damage_max" in props:
+            lo = props["physical_damage_min"] * q
+            hi = props["physical_damage_max"] * q
+            out.append(f"Physical Damage: {round(lo)}–{round(hi)}{note}")
+        if props.get("attack_time"):
+            out.append(f"Attacks per Second: {1000 / props['attack_time']:.2f}")
+        if props.get("critical_strike_chance"):
+            out.append(f"Critical Strike Chance: {props['critical_strike_chance'] / 100:.1f}%")
+        if props.get("block"):
+            out.append(f"Chance to Block: {props['block']}%")
+        if props.get("movement_speed"):
+            out.append(f"Movement Speed: {props['movement_speed']}%")
+        return out
 
     @staticmethod
     def _requirement_text(item):
@@ -1001,11 +1104,9 @@ def run(screen, item_count=20, selftest=False):
                 if not ui.handle_escape():
                     running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                ui.on_mouse_down(event.pos)
-            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                ui.on_mouse_up(event.pos)
-            elif event.type == pygame.MOUSEMOTION:
-                ui.on_mouse_motion(event.pos)
+                ui.on_left_down(event.pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                ui.on_right_down(event.pos)
             elif event.type == pygame.MOUSEWHEEL:
                 ui.handle_scroll(event.y, pygame.mouse.get_pos())
 
@@ -1015,33 +1116,39 @@ def run(screen, item_count=20, selftest=False):
 
         if selftest:
             frames += 1
-            if frames == 2:
+            if frames == 2:  # left-click an item to pick it up, place it elsewhere
                 items = [e for e in ui.entries if not e.currency]
                 if items:
-                    src = ui._entry_rect(items[0]).center
-                    ui.on_mouse_down(src)
-                    ui.on_mouse_motion((src[0] + 20, src[1] + 20))
-                    ui.on_mouse_up(ui.slot_rects["weapon"].center)
-            if frames == 3:
-                ui.handle_click(ui.buttons["debug"].center)
-            if frames == 4 and ui.dbg_rows:
-                ui.handle_click(ui.dbg_rows[4][1].center)
-            if frames == 5:
-                ui.handle_escape()
-                ui.handle_click(ui.buttons["debug"].center)
-            if frames == 6:
+                    ui.on_left_down(ui._entry_rect(items[0]).center)
+                    ox, oy = ui.inv_origin
+                    ui.on_left_down((ox + (ui.inv_cols - 1) * ui.inv_cell + 4,
+                                     oy + (ui.inv_rows - 1) * ui.inv_cell + 4))
+            if frames == 3:  # right-click an identified item to equip
+                for e in ui.entries:
+                    if not e.currency and e.obj.identified and ui._equippable(e.obj):
+                        ui.on_right_down(ui._entry_rect(e).center)
+                        break
+            if frames == 4:  # ready a Scroll of Wisdom, left-click an item to use it
                 cur = next((e for e in ui.entries if e.currency), None)
                 itm = next((e for e in ui.entries if not e.currency), None)
                 if cur and itm:
-                    src = ui._entry_rect(cur).center
-                    ui.on_mouse_down(src)
-                    ui.on_mouse_motion((src[0] + 20, src[1]))
-                    ui.on_mouse_up(ui._entry_rect(itm).center)
+                    ui.on_right_down(ui._entry_rect(cur).center)
+                    ui.on_left_down(ui._entry_rect(itm).center)
+                    ui.on_right_down((0, 0))  # cancel orb on cursor
+            if frames == 5:
+                ui.on_left_down(ui.buttons["levelup"].center)
+            if frames == 6:
+                ui.on_left_down(ui.buttons["class"].center)
             if frames == 7:
-                ui.on_resize(1280, 760)
+                ui.on_left_down(ui.buttons["debug"].center)
+                if ui.dbg_rows:
+                    ui.on_left_down(ui.dbg_rows[3][1].center)
             if frames == 8:
-                ui.handle_click(ui.buttons["reload"].center)
-            if frames >= 10:
+                ui.handle_escape()
+                ui.on_resize(1280, 760)
+            if frames == 9:
+                ui.on_left_down(ui.buttons["reload"].center)
+            if frames >= 11:
                 running = False
 
 

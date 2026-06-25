@@ -76,23 +76,51 @@ class Monster(BaseCharacter):
         self.stats.physicalDamage.addPositiveStat(5 + self.level * 2)
 
 
+# Playable classes and their starting attributes (Str, Dex, Int), in the spirit
+# of Path of Exile's seven classes.
+CLASSES = {
+    "Marauder": (32, 14, 14),
+    "Ranger": (14, 32, 14),
+    "Witch": (14, 14, 32),
+    "Duelist": (23, 23, 14),
+    "Templar": (23, 14, 23),
+    "Shadow": (14, 23, 23),
+    "Scion": (20, 20, 20),
+}
+CLASS_NAMES = list(CLASSES)
+
+
 class Character(BaseCharacter):
-    def __init__(self, name, level=1):
+    def __init__(self, name, char_class="Marauder", level=1):
         self.inventory = Inventory()
+        self.char_class = char_class if char_class in CLASSES else "Scion"
         super().__init__(name, level)
 
     def setBaseStats(self):
         super().setBaseStats()
-        self.stats.life.addPositiveStat(50)
+        strength, dexterity, intelligence = CLASSES[self.char_class]
+        self.stats.attributes.strength.addPositiveStat(strength)
+        self.stats.attributes.dexterity.addPositiveStat(dexterity)
+        self.stats.attributes.intelligence.addPositiveStat(intelligence)
+
+        # Per-level scaling (life/mana/accuracy grow as you level up).
+        levels = self.level - 1
+        self.stats.life.addPositiveStat(50 + 12 * levels)
         self.stats.life.regenerateStat.addPositiveStat(10)
-        self.stats.mana.addPositiveStat(40)
+        self.stats.mana.addPositiveStat(40 + 6 * levels)
         self.stats.mana.regenerateStat.addPositiveStat(10)
+        self.stats.accuracy.addPositiveStat(2 * levels)
         self.stats.evasion.addPositiveStat(53)
         self.stats.physicalDamage.addPositiveStat(5)
-        self.stats.accuracy.addPositiveStat(50)
         self.stats.criticalStrikeChance.addPositiveStat(5)
+
+    def level_up(self, amount=1):
+        self.level = max(1, self.level + amount)
+        self.recalibrate()
+        return self.level
 
     def reprJSON(self):
         repr_dict = super().reprJSON()
+        repr_dict["class"] = self.char_class
         repr_dict["inventory"] = self.inventory
         return repr_dict
