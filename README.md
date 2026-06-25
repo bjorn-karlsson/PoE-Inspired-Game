@@ -30,6 +30,9 @@ python inventory_test.py --seed 1    # reproducible loot
 python inventory_test.py --fullscreen
 ```
 
+- Opens in a small **world view**: your character stands in an environment and
+  **left-click to move** (ARPG style); life/mana globes sit in the corner. Press
+  **I** (or Tab) to open/close the inventory, **Esc** to quit.
 - **Resizable** window; equipment paper-doll + a grid inventory that holds both
   items and stackable currency. Items show their **type** (full name in tooltip).
 - **Playable classes** (Marauder / Ranger / Witch / Duelist / Templar / Shadow /

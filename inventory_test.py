@@ -413,7 +413,7 @@ class InventoryTest:
         entry = self.cursor_item
         item = entry.obj
         slot = self._slot_at(pos)
-        if slot is not None:
+        if slot is not None and not entry.currency:
             if self._try_equip_cursor(item):
                 return
         if self.inv_panel.collidepoint(pos):
@@ -877,8 +877,12 @@ class InventoryTest:
         s.blit(self.f_small.render(txt, True, FAINT), (36, self.H - 32))
 
     def _draw_item_cursor(self, s, mouse_pos):
-        item = self.cursor_item.obj
-        w, h = self.cursor_item.w * 44, self.cursor_item.h * 44
+        entry = self.cursor_item
+        if entry.currency:
+            self._draw_orb(s, mouse_pos, entry.obj)
+            return
+        item = entry.obj
+        w, h = entry.w * 44, entry.h * 44
         rect = pygame.Rect(0, 0, w, h)
         rect.center = mouse_pos
         ghost = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -890,8 +894,10 @@ class InventoryTest:
         s.blit(ghost, rect)
 
     def _draw_orb_cursor(self, s, mouse_pos):
-        cur = self.cursor_currency.obj
-        cx, cy = mouse_pos[0] + 16, mouse_pos[1] + 16
+        self._draw_orb(s, (mouse_pos[0] + 16, mouse_pos[1] + 16), self.cursor_currency.obj)
+
+    def _draw_orb(self, s, center, cur):
+        cx, cy = center
         pygame.draw.circle(s, orb_color(cur.name), (cx, cy), 15)
         pygame.draw.circle(s, (240, 236, 222), (cx - 5, cy - 5), 4)
         abbr = self.f_tiny.render(orb_abbrev(cur.name), True, (20, 18, 14))
@@ -1084,72 +1090,270 @@ class InventoryTest:
         s.set_clip(None)
 
 
+# ------------------------------------------------------------------ world ----
+class World:
+    """A minimal ARPG environment: click to move your character around."""
+
+    def __init__(self, game, size):
+        self.game = game
+        self.W, self.H = size
+        self.player = pygame.Vector2(self.W / 2, self.H / 2)
+        self.target = pygame.Vector2(self.player)
+        self.speed = 340.0
+        self.facing = pygame.Vector2(0, 1)
+        self.marker_timer = 0.0
+        self.f = pygame.font.Font(None, 26)
+        self.f_small = pygame.font.Font(None, 22)
+        self.f_big = pygame.font.Font(None, 38)
+        self._regen_decor()
+
+    @property
+    def character(self):
+        return self.game.inv.character
+
+    def on_resize(self, w, h):
+        self.W, self.H = w, h
+        self.player.x = min(self.player.x, w - 40)
+        self.player.y = min(self.player.y, h - 40)
+        self.target.update(self.player)
+        self._regen_decor()
+
+    def _regen_decor(self):
+        rng = _random.Random(1234)
+        self.decor = []
+        for _ in range(36):
+            x = rng.randint(30, max(31, self.W - 30))
+            y = rng.randint(120, max(121, self.H - 60))
+            r = rng.randint(5, 14)
+            shade = rng.randint(28, 46)
+            self.decor.append((x, y, r, (shade, shade + 4, shade + 8)))
+
+    def handle_click(self, pos):
+        if pos[1] < 96:        # leave room for the HUD strip at the top
+            return
+        self.target = pygame.Vector2(pos)
+        self.marker_timer = 0.6
+
+    def update(self, dt):
+        if self.marker_timer > 0:
+            self.marker_timer -= dt
+        to_target = self.target - self.player
+        dist = to_target.length()
+        if dist > 1:
+            self.facing = to_target / dist
+            self.player += self.facing * min(dist, self.speed * dt)
+
+    # -- drawing -----------------------------------------------------------
+    def draw(self, s, mouse_pos):
+        self._draw_ground(s)
+        for x, y, r, col in self.decor:
+            pygame.draw.ellipse(s, col, (x - r, y - r // 2, r * 2, r))
+        if self.marker_timer > 0:
+            self._draw_marker(s)
+        self._draw_player(s)
+        self._draw_hud(s)
+
+    def _draw_ground(self, s):
+        top, bot = (26, 30, 26), (14, 16, 14)
+        for y in range(0, self.H, 4):
+            t = y / max(1, self.H)
+            s.fill(tuple(int(top[i] + (bot[i] - top[i]) * t) for i in range(3)),
+                   (0, y, self.W, 4))
+        grid = (32, 36, 32)
+        for x in range(0, self.W, 64):
+            pygame.draw.line(s, grid, (x, 96), (x, self.H))
+        for y in range(96, self.H, 64):
+            pygame.draw.line(s, grid, (0, y), (self.W, y))
+
+    def _draw_marker(self, s):
+        r = int(6 + (0.6 - self.marker_timer) * 30)
+        alpha = max(0, int(self.marker_timer / 0.6 * 200))
+        surf = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
+        pygame.draw.circle(surf, (120, 220, 130, alpha), (r + 2, r + 2), r, 3)
+        s.blit(surf, (self.target.x - r - 2, self.target.y - r - 2))
+
+    def _draw_player(self, s):
+        px, py = int(self.player.x), int(self.player.y)
+        # class-tinted body
+        tint = {
+            "Marauder": (200, 90, 70), "Ranger": (90, 190, 110),
+            "Witch": (150, 110, 210), "Duelist": (200, 170, 90),
+            "Templar": (210, 200, 120), "Shadow": (120, 130, 200),
+            "Scion": (210, 160, 180),
+        }.get(self.character.char_class, (200, 180, 120))
+        pygame.draw.ellipse(s, (0, 0, 0, 80), (px - 16, py + 12, 32, 12))
+        pygame.draw.circle(s, tint, (px, py), 16)
+        pygame.draw.circle(s, (20, 20, 24), (px, py), 16, 2)
+        nub = self.player + self.facing * 18
+        pygame.draw.line(s, (250, 240, 220), (px, py), (int(nub.x), int(nub.y)), 3)
+        name = self.f_small.render(self.character.name, True, TEXT)
+        s.blit(name, name.get_rect(centerx=px, bottom=py - 22))
+
+    def _draw_hud(self, s):
+        c = self.character
+        pygame.draw.rect(s, (16, 16, 20), (0, 0, self.W, 64))
+        pygame.draw.line(s, PANEL_LIGHT, (0, 64), (self.W, 64), 1)
+        title = self.f_big.render(c.name, True, ACCENT)
+        s.blit(title, (24, 14))
+        sub = self.f_small.render(f"{c.char_class}  ·  Level {c.level}", True, DIM)
+        s.blit(sub, (24 + title.get_width() + 16, 26))
+        # life / mana globes (bottom-left)
+        self._globe(s, 54, self.H - 54, 40, (190, 60, 60), c.stats.life)
+        self._globe(s, 150, self.H - 54, 40, (60, 110, 200), c.stats.mana)
+        hint = self.f_small.render("Left-click to move  •  press  I  for inventory  •  Esc to quit",
+                                   True, DIM)
+        s.blit(hint, hint.get_rect(centerx=self.W // 2, bottom=self.H - 12))
+
+    def _globe(self, s, cx, cy, r, color, pool):
+        total = pool.totalStat or 1
+        frac = max(0.0, min(1.0, (pool.currentStat or total) / total))
+        pygame.draw.circle(s, (24, 24, 28), (cx, cy), r)
+        fill_h = int(r * 2 * frac)
+        clip = pygame.Rect(cx - r, cy + r - fill_h, r * 2, fill_h)
+        prev = s.get_clip()
+        s.set_clip(clip)
+        pygame.draw.circle(s, color, (cx, cy), r)
+        s.set_clip(prev)
+        pygame.draw.circle(s, PANEL_LIGHT, (cx, cy), r, 2)
+        label = self.f_small.render(f"{int(pool.totalStat)}", True, TEXT)
+        s.blit(label, label.get_rect(center=(cx, cy)))
+
+
+class Game:
+    """Top-level app: a world you walk in, with an inventory toggled by 'I'."""
+
+    def __init__(self, screen, item_count):
+        self.screen = screen
+        self.inv = InventoryTest(screen, item_count)
+        self.world = World(self, screen.get_size())
+        self.show_inventory = False
+
+    def set_screen(self, screen):
+        self.screen = screen
+        self.inv.screen = screen
+
+    def on_resize(self, w, h):
+        self.inv.on_resize(w, h)
+        self.world.on_resize(w, h)
+
+    def left_down(self, pos):
+        (self.inv.on_left_down if self.show_inventory else self.world.handle_click)(pos)
+
+    def right_down(self, pos):
+        if self.show_inventory:
+            self.inv.on_right_down(pos)
+
+    def wheel(self, y, pos):
+        if self.show_inventory:
+            self.inv.handle_scroll(y, pos)
+
+    def escape(self):
+        """Return True if handled (don't quit)."""
+        if self.show_inventory:
+            if not self.inv.handle_escape():
+                self.show_inventory = False
+            return True
+        return False
+
+    def update(self, dt):
+        if not self.show_inventory:
+            self.world.update(dt)
+
+    def draw(self, mouse_pos):
+        if self.show_inventory:
+            self.inv.draw(mouse_pos)
+        else:
+            self.world.draw(self.screen, mouse_pos)
+
+
 # ------------------------------------------------------------------ main ----
 def run(screen, item_count=20, selftest=False):
-    pygame.display.set_caption("poe_engine — Inventory Test")
+    if selftest:
+        return _run_selftest(screen, item_count)
+
+    pygame.display.set_caption("poe_engine — ARPG")
     clock = pygame.time.Clock()
-    ui = InventoryTest(screen, item_count)
+    game = Game(screen, item_count)
 
     running = True
-    frames = 0
     while running:
+        dt = clock.tick(60) / 1000.0
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            elif event.type == pygame.VIDEORESIZE and not selftest:
+            elif event.type == pygame.VIDEORESIZE:
                 screen = pygame.display.set_mode((event.w, event.h), pygame.RESIZABLE)
-                ui.screen = screen
-                ui.on_resize(event.w, event.h)
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                if not ui.handle_escape():
+                game.set_screen(screen)
+                game.on_resize(event.w, event.h)
+            elif event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_i, pygame.K_TAB):
+                    game.show_inventory = not game.show_inventory
+                elif event.key == pygame.K_ESCAPE and not game.escape():
                     running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                ui.on_left_down(event.pos)
+                game.left_down(event.pos)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-                ui.on_right_down(event.pos)
+                game.right_down(event.pos)
             elif event.type == pygame.MOUSEWHEEL:
-                ui.handle_scroll(event.y, pygame.mouse.get_pos())
+                game.wheel(event.y, pygame.mouse.get_pos())
 
-        ui.draw(pygame.mouse.get_pos())
+        game.update(dt)
+        game.draw(pygame.mouse.get_pos())
         pygame.display.flip()
-        clock.tick(60)
 
-        if selftest:
-            frames += 1
-            if frames == 2:  # left-click an item to pick it up, place it elsewhere
-                items = [e for e in ui.entries if not e.currency]
-                if items:
-                    ui.on_left_down(ui._entry_rect(items[0]).center)
-                    ox, oy = ui.inv_origin
-                    ui.on_left_down((ox + (ui.inv_cols - 1) * ui.inv_cell + 4,
-                                     oy + (ui.inv_rows - 1) * ui.inv_cell + 4))
-            if frames == 3:  # right-click an identified item to equip
-                for e in ui.entries:
-                    if not e.currency and e.obj.identified and ui._equippable(e.obj):
-                        ui.on_right_down(ui._entry_rect(e).center)
-                        break
-            if frames == 4:  # ready a Scroll of Wisdom, left-click an item to use it
-                cur = next((e for e in ui.entries if e.currency), None)
-                itm = next((e for e in ui.entries if not e.currency), None)
-                if cur and itm:
-                    ui.on_right_down(ui._entry_rect(cur).center)
-                    ui.on_left_down(ui._entry_rect(itm).center)
-                    ui.on_right_down((0, 0))  # cancel orb on cursor
-            if frames == 5:
-                ui.on_left_down(ui.buttons["levelup"].center)
-            if frames == 6:
-                ui.on_left_down(ui.buttons["class"].center)
-            if frames == 7:
-                ui.on_left_down(ui.buttons["debug"].center)
-                if ui.dbg_rows:
-                    ui.on_left_down(ui.dbg_rows[3][1].center)
-            if frames == 8:
+
+def _run_selftest(screen, item_count):
+    """Headless smoke test of the inventory UI and the world view."""
+    ui = InventoryTest(screen, item_count)
+    for frame in range(1, 12):
+        if frame == 2:
+            items = [e for e in ui.entries if not e.currency]
+            if items:
+                ui.on_left_down(ui._entry_rect(items[0]).center)
+                ox, oy = ui.inv_origin
+                ui.on_left_down((ox + (ui.inv_cols - 1) * ui.inv_cell + 4,
+                                 oy + (ui.inv_rows - 1) * ui.inv_cell + 4))
+        if frame == 3:
+            cur = next((e for e in ui.entries if e.currency), None)
+            if cur:
+                ui.on_left_down(ui._entry_rect(cur).center)  # move currency
+                ui.draw((400, 400))
                 ui.handle_escape()
-                ui.on_resize(1280, 760)
-            if frames == 9:
-                ui.on_left_down(ui.buttons["reload"].center)
-            if frames >= 11:
-                running = False
+        if frame == 4:
+            for e in ui.entries:
+                if not e.currency and e.obj.identified and ui._equippable(e.obj):
+                    ui.on_right_down(ui._entry_rect(e).center)
+                    break
+        if frame == 5:
+            cur = next((e for e in ui.entries if e.currency), None)
+            itm = next((e for e in ui.entries if not e.currency), None)
+            if cur and itm:
+                ui.on_right_down(ui._entry_rect(cur).center)
+                ui.on_left_down(ui._entry_rect(itm).center)
+                ui.on_right_down((0, 0))
+        if frame == 6:
+            ui.on_left_down(ui.buttons["levelup"].center)
+        if frame == 7:
+            ui.on_left_down(ui.buttons["class"].center)
+        if frame == 8:
+            ui.on_left_down(ui.buttons["debug"].center)
+            if ui.dbg_rows:
+                ui.on_left_down(ui.dbg_rows[3][1].center)
+        if frame == 9:
+            ui.handle_escape()
+            ui.on_resize(1280, 760)
+        if frame == 10:
+            ui.on_left_down(ui.buttons["reload"].center)
+        ui.draw((640, 480))
+
+    # World smoke test
+    game = Game(screen, item_count)
+    game.world.handle_click((300, 300))
+    for _ in range(20):
+        game.update(0.016)
+        game.draw((300, 300))
+    game.show_inventory = True
+    game.draw((300, 300))
 
 
 def main():
