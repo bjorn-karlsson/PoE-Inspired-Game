@@ -35,10 +35,11 @@ python inventory_test.py --fullscreen
 - **Playable classes** (Marauder / Ranger / Witch / Duelist / Templar / Shadow /
   Scion) with different starting attributes; everyone starts at **level 1**. The
   toolbar has a **Class** button (cycles, resets to level 1) and **Level +1**.
-- **Controls**: *left-drag* to move/rearrange items and currency; *right-click*
-  an item to **equip**/unequip; *right-click an orb* to pick it up, then
-  *left-click an item* to use it (**Shift** keeps the orb in hand for repeated
-  use). You can't equip **unidentified** items.
+- **Controls** (Path-of-Exile style): *left-click* an item to **pick it up** onto
+  the cursor, left-click again to **place / equip / swap** it; *right-click* an
+  item to **equip** (or a slot to unequip); *right-click an orb* to **ready it**
+  on the cursor, then *left-click items* to apply it — it stays ready until you
+  right-click / Esc to cancel. You can't equip **unidentified** items.
 - Items contribute their **base defences / weapon damage** (scaled by quality) on
   top of their mods, so gear actually changes your defences.
 - Hover any item for a PoE-style tooltip (item level, **quality**, requirements,

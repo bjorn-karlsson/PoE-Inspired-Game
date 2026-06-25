@@ -199,7 +199,8 @@ class InventoryTest:
 
         # UI state
         self.tab = "def"
-        self.held = None              # currency Entry "in hand" (right-clicked)
+        self.cursor_item = None       # Entry picked up onto the cursor (move/equip)
+        self.cursor_currency = None   # currency Entry readied on the cursor
         self.scroll = 0
         self.debug_mode = False
         self.debug_stat = None
@@ -209,13 +210,6 @@ class InventoryTest:
         self._bd_sig = None
         self.status_text = ""
         self.status_timer = 0
-
-        # drag state
-        self._press_pos = None
-        self._press_target = None     # ("entry", Entry) | ("slot", name)
-        self._dragging = False
-        self.drag = None              # {"label","color"}
-        self._grab_offset = (0, 0)
 
         self.slot_rects = {}
         self.buttons = {}
@@ -354,96 +348,120 @@ class InventoryTest:
     def _equippable(self, item):
         return self.character.equipments.slot_for(item) is not None
 
-    # ===================================================== interaction =======
-    # Mouse model:
-    #   Left button  -> drag to move/rearrange items & currency; or, while an orb
-    #                   is "held", left-click an item to use the orb on it.
-    #   Right button -> equip an item / unequip a slot; right-click a currency to
-    #                   pick it up "into hand". Shift while using a held orb keeps
-    #                   it in hand for repeated use.
-    def on_mouse_down(self, pos):
-        self._press_pos = pos
-        self._dragging = False
-        self._press_target = None
-        if self.held is not None:
-            return  # holding an orb: left-click resolves on release, no drag
-        entry = self._entry_at(pos)
-        if entry is not None:
-            self._press_target = ("entry", entry)
-            r = self._entry_rect(entry)
-            self._grab_offset = (pos[0] - r.x, pos[1] - r.y)
-            return
-        for slot, rect in self.slot_rects.items():
-            if rect.collidepoint(pos) and getattr(self.character.equipments, slot):
-                self._press_target = ("slot", slot)
-                self._grab_offset = (rect.width // 2, rect.height // 2)
-                return
-
-    def on_mouse_motion(self, pos):
-        if self._press_pos and not self._dragging and self._press_target:
-            if abs(pos[0] - self._press_pos[0]) + abs(pos[1] - self._press_pos[1]) > 6:
-                self._dragging = True
-                self.drag = self._make_drag(self._press_target)
-
-    def on_mouse_up(self, pos):
-        if self._dragging:
-            self._drop_move(pos)
-        elif self._press_pos is not None:
-            self._left_click(pos)
-        self._press_pos = self._press_target = None
-        self._dragging = False
-        self.drag = None
-
-    def on_right_down(self, pos):
-        if self._ui_click(pos):
-            return
-        entry = self._entry_at(pos)
-        if entry is not None:
-            if entry.currency:
-                self.held = entry
-                self._flash(f"Holding {entry.obj.name} — left-click an item (Shift to keep)")
-            else:
-                self._equip(entry)
-            return
-        slot = self._slot_at(pos)
-        if slot and getattr(self.character.equipments, slot):
-            self._unequip(slot)
-
-    def _make_drag(self, target):
-        kind, value = target
-        if kind == "slot":
-            item = getattr(self.character.equipments, value)
-            return {"label": item.itemClass, "color": RARITY_COLORS.get(item.rarity.rarity, TEXT)}
-        entry = value
-        if entry.currency:
-            return {"label": orb_abbrev(entry.obj.name), "color": orb_color(entry.obj.name)}
-        return {"label": entry.obj.itemClass,
-                "color": RARITY_COLORS.get(entry.obj.rarity.rarity, TEXT)}
-
-    def _drop_move(self, pos):
-        """Left-drag release: move within bag, or unequip by dragging to bag."""
-        kind, value = self._press_target
-        if kind == "slot":
-            if self.inv_panel.collidepoint(pos):
-                self._unequip(value, pos)
-            return
-        if self.inv_panel.collidepoint(pos):
-            self._move_entry(value, pos)
-
     def _slot_at(self, pos):
         for slot, rect in self.slot_rects.items():
             if rect.collidepoint(pos):
                 return slot
         return None
 
-    def _move_entry(self, entry, pos):
-        tx = pos[0] - self._grab_offset[0] + self.inv_cell // 2
-        ty = pos[1] - self._grab_offset[1] + self.inv_cell // 2
-        gx, gy = self._cell_at((tx, ty))
-        if self._fits(entry, gx, gy):
-            entry.x, entry.y = gx, gy
+    # ===================================================== interaction =======
+    # Path-of-Exile-style mouse model:
+    #   Left-click  -> pick an item up onto the cursor; left-click again to place
+    #                  it (empty cell, equipment slot, or swap). While a currency
+    #                  orb is on the cursor, left-click an item to use it.
+    #   Right-click -> action: equip an item / unequip a slot; right-click a
+    #                  currency to put it on the cursor (then left-click items to
+    #                  apply it -- it stays until you right-click / Esc to cancel).
+    def on_left_down(self, pos):
+        if self._ui_click(pos):
+            return
+        if self.cursor_currency is not None:
+            target = self._entry_at(pos)
+            if target is not None and not target.currency:
+                self._apply_currency(target.obj)
+            return
+        if self.cursor_item is not None:
+            self._place_cursor_item(pos)
+            return
+        # empty hand: pick something up
+        entry = self._entry_at(pos)
+        if entry is not None:
+            self.entries.remove(entry)
+            self.cursor_item = entry
+            return
+        slot = self._slot_at(pos)
+        if slot and getattr(self.character.equipments, slot):
+            item = getattr(self.character.equipments, slot)
+            self.character.unequip(slot)
+            self._invalidate()
+            self.cursor_item = Entry(item)
 
-    def _equip(self, entry):
+    def on_right_down(self, pos):
+        if self.cursor_item is not None:
+            self._return_cursor_item()
+            return
+        if self.cursor_currency is not None:
+            self.cursor_currency = None
+            return
+        if self._ui_click(pos):
+            return
+        entry = self._entry_at(pos)
+        if entry is not None:
+            if entry.currency:
+                self.cursor_currency = entry
+                self._flash(f"{entry.obj.name} ready — left-click an item "
+                            f"(right-click / Esc to cancel)")
+            else:
+                self._quick_equip(entry)
+            return
+        slot = self._slot_at(pos)
+        if slot and getattr(self.character.equipments, slot):
+            self._unequip(slot)
+
+    # -- cursor item (move / equip / swap) ---------------------------------
+    def _place_cursor_item(self, pos):
+        entry = self.cursor_item
+        item = entry.obj
+        slot = self._slot_at(pos)
+        if slot is not None:
+            if self._try_equip_cursor(item):
+                return
+        if self.inv_panel.collidepoint(pos):
+            gx, gy = self._cell_at(pos)
+            if self._fits(entry, gx, gy):
+                entry.x, entry.y = gx, gy
+                self.entries.append(entry)
+                self.cursor_item = None
+                return
+            self._try_swap(entry, pos)
+        # clicked elsewhere: keep holding the item
+
+    def _try_equip_cursor(self, item):
+        if not item.identified:
+            self._flash("Identify the item first (Scroll of Wisdom)")
+            return True
+        if not self._equippable(item):
+            self._flash(f"{item.itemClass} can't be equipped there")
+            return True
+        replaced = self.character.equip(item)
+        self._invalidate()
+        self.cursor_item = Entry(replaced) if replaced is not None else None
+        return True
+
+    def _try_swap(self, entry, pos):
+        occ = self._entry_at(pos)
+        if occ is None or occ.currency:
+            self._flash("Doesn't fit there")
+            return
+        ox, oy = occ.x, occ.y
+        self.entries.remove(occ)
+        if self._fits(entry, ox, oy):
+            entry.x, entry.y = ox, oy
+            self.entries.append(entry)
+            self.cursor_item = occ  # swapped item goes to the cursor
+        else:
+            self.entries.append(occ)
+            self._flash("Doesn't fit there")
+
+    def _return_cursor_item(self):
+        if self._place(self.cursor_item):
+            self.entries.append(self.cursor_item)
+            self.cursor_item = None
+        else:
+            self._flash("No room to drop it")
+
+    # -- equipment / currency ----------------------------------------------
+    def _quick_equip(self, entry):
         item = entry.obj
         if not item.identified:
             self._flash("Identify the item first (Scroll of Wisdom)")
@@ -457,55 +475,34 @@ class InventoryTest:
             self._add_to_bag(replaced)
         self._invalidate()
 
-    def _unequip(self, slot, pos=None):
+    def _unequip(self, slot):
         item = getattr(self.character.equipments, slot)
         if item is None:
             return
         self.character.unequip(slot)
-        self._add_to_bag(item, pos)
+        self._add_to_bag(item)
         self._invalidate()
 
-    def _add_to_bag(self, item, pos=None):
+    def _add_to_bag(self, item):
         entry = Entry(item)
-        if pos is not None and self.inv_panel.collidepoint(pos):
-            gx, gy = self._cell_at(pos)
-            if self._fits(entry, gx, gy):
-                entry.x, entry.y = gx, gy
-                self.entries.append(entry)
-                return
         if not self._place(entry):
             self._flash("No room in inventory")
             return
         self.entries.append(entry)
 
-    def _apply_held(self, item):
-        """Use the held orb on *item*; keep it in hand if Shift is down."""
-        entry = self.held
+    def _apply_currency(self, item):
+        entry = self.cursor_currency
         cur = entry.obj
-        keep = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
         if cur.use_on(item):
             self._flash(f"{cur.name} used on {item.name}")
             self._invalidate()
             if cur.count <= 0:
                 if entry in self.entries:
                     self.entries.remove(entry)
-                self.held = None
-            elif not keep:
-                self.held = None
+                self.cursor_currency = None
+            # otherwise the orb stays on the cursor (PoE-style repeat use)
         else:
-            self._flash(f"{cur.name}: {cur.reason(item)}")  # keep holding on failure
-
-    def _left_click(self, pos):
-        if self._ui_click(pos):
-            return
-        if self.held is not None:
-            target = self._entry_at(pos)
-            if target is not None and not target.currency:
-                self._apply_held(target.obj)
-            else:
-                self.held = None  # clicked elsewhere: stop holding
-            return
-        # A plain left click with nothing held does nothing (left = move/drag).
+            self._flash(f"{cur.name}: {cur.reason(item)}")
 
     def _ui_click(self, pos):
         """Handle clicks on toolbar / tabs / debug rows. Returns True if used."""
@@ -543,6 +540,7 @@ class InventoryTest:
         self._flash(f"Levelled up to {self.character.level}")
 
     def _cycle_class(self):
+        self.cursor_item = self.cursor_currency = None
         self._unequip_all()
         idx = (CLASS_NAMES.index(self.char_class) + 1) % len(CLASS_NAMES)
         self.char_class = CLASS_NAMES[idx]
@@ -564,8 +562,11 @@ class InventoryTest:
                 self.scroll = max(0, self.scroll - dy * step)
 
     def handle_escape(self):
-        if self.held is not None:
-            self.held = None
+        if self.cursor_item is not None:
+            self._return_cursor_item()
+            return True
+        if self.cursor_currency is not None:
+            self.cursor_currency = None
             return True
         if self.debug_mode and self.debug_stat is not None:
             self.debug_stat = None
@@ -579,7 +580,8 @@ class InventoryTest:
         rng_seed(_random.randrange(1 << 30))
         self.character = Character("Exile", char_class=self.char_class, level=1)
         self.debug_stat = None
-        self.held = None
+        self.cursor_item = None
+        self.cursor_currency = None
         self.scroll = self.dbg_scroll = 0
         self._invalidate()
         self._fill_bag()
@@ -617,12 +619,13 @@ class InventoryTest:
         self._draw_inventory(s, mouse_pos)
 
         self._draw_help(s)
-        if self._dragging and self.drag:
-            self._draw_drag_ghost(s, mouse_pos)
+        if self.cursor_item is not None:
+            self._draw_item_cursor(s, mouse_pos)
+        elif self.cursor_currency is not None:
+            self._draw_tooltip(s, mouse_pos)
+            self._draw_orb_cursor(s, mouse_pos)
         else:
             self._draw_tooltip(s, mouse_pos)
-            if self.held is not None:
-                self._draw_held_ghost(s, mouse_pos)
 
         if self.status_timer > 0:
             self.status_timer -= 1
@@ -678,8 +681,6 @@ class InventoryTest:
             y = oy + r * self.inv_cell
             pygame.draw.line(s, (38, 39, 50), (ox, y), (grid.right, y))
         for entry in self.entries:
-            if self._dragging and self._press_target == ("entry", entry):
-                continue
             rect = self._entry_rect(entry)
             if entry.currency:
                 self._draw_currency_icon(s, entry.obj, rect)
@@ -870,29 +871,31 @@ class InventoryTest:
 
     # ---- help / ghost ----------------------------------------------------
     def _draw_help(self, s):
-        txt = ("Left-drag = move/rearrange  •  Right-click item = equip/unequip  •  "
-               "Right-click orb = pick up, then left-click an item to use it (Shift = keep)  •  "
+        txt = ("Left-click = pick up / place item  •  Right-click item = equip/unequip  •  "
+               "Right-click orb = ready it, then left-click items to apply  •  "
                "Alt = ranges/tiers  •  Esc = cancel/back")
         s.blit(self.f_small.render(txt, True, FAINT), (36, self.H - 32))
 
-    def _draw_held_ghost(self, s, mouse_pos):
-        cur = self.held.obj
+    def _draw_item_cursor(self, s, mouse_pos):
+        item = self.cursor_item.obj
+        w, h = self.cursor_item.w * 44, self.cursor_item.h * 44
+        rect = pygame.Rect(0, 0, w, h)
+        rect.center = mouse_pos
+        ghost = pygame.Surface((w, h), pygame.SRCALPHA)
+        ghost.fill((22, 22, 28, 220))
+        color = RARITY_COLORS.get(item.rarity.rarity, TEXT)
+        pygame.draw.rect(ghost, color, ghost.get_rect(), width=2, border_radius=6)
+        label = self.f_tiny.render(item.itemClass, True, color)
+        ghost.blit(label, label.get_rect(center=(w // 2, h // 2)))
+        s.blit(ghost, rect)
+
+    def _draw_orb_cursor(self, s, mouse_pos):
+        cur = self.cursor_currency.obj
         cx, cy = mouse_pos[0] + 16, mouse_pos[1] + 16
         pygame.draw.circle(s, orb_color(cur.name), (cx, cy), 15)
         pygame.draw.circle(s, (240, 236, 222), (cx - 5, cy - 5), 4)
         abbr = self.f_tiny.render(orb_abbrev(cur.name), True, (20, 18, 14))
         s.blit(abbr, abbr.get_rect(center=(cx, cy + 1)))
-
-    def _draw_drag_ghost(self, s, mouse_pos):
-        w, h = 86, 44
-        rect = pygame.Rect(0, 0, w, h)
-        rect.center = mouse_pos
-        ghost = pygame.Surface((w, h), pygame.SRCALPHA)
-        ghost.fill((22, 22, 28, 215))
-        pygame.draw.rect(ghost, self.drag["color"], ghost.get_rect(), width=2, border_radius=6)
-        label = self.f_tiny.render(str(self.drag["label"]), True, self.drag["color"])
-        ghost.blit(label, label.get_rect(center=(w // 2, h // 2)))
-        s.blit(ghost, rect)
 
     # ---- tooltip ---------------------------------------------------------
     def _wrap(self, text, color, max_w, font):
@@ -959,7 +962,8 @@ class InventoryTest:
             add_block(item.implicits, IMPLICIT_COLOR, "Implicit")
             sep()
             push("Unidentified", (235, 95, 95), self.f_small)
-            push("Drag a Scroll of Wisdom onto it to identify.", FAINT, self.f_tiny)
+            push("Right-click a Scroll of Wisdom, then left-click this item.",
+                 FAINT, self.f_tiny)
             return lines
 
         add_block(item.implicits, IMPLICIT_COLOR, "Implicit")
@@ -1100,13 +1104,9 @@ def run(screen, item_count=20, selftest=False):
                 if not ui.handle_escape():
                     running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                ui.on_mouse_down(event.pos)
-            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                ui.on_mouse_up(event.pos)
+                ui.on_left_down(event.pos)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
                 ui.on_right_down(event.pos)
-            elif event.type == pygame.MOUSEMOTION:
-                ui.on_mouse_motion(event.pos)
             elif event.type == pygame.MOUSEWHEEL:
                 ui.handle_scroll(event.y, pygame.mouse.get_pos())
 
@@ -1116,42 +1116,38 @@ def run(screen, item_count=20, selftest=False):
 
         if selftest:
             frames += 1
-
-            def click(pos):  # simulate a plain left click
-                ui.on_mouse_down(pos)
-                ui.on_mouse_up(pos)
-
-            if frames == 2:  # drag an item to rearrange it within the bag
+            if frames == 2:  # left-click an item to pick it up, place it elsewhere
                 items = [e for e in ui.entries if not e.currency]
                 if items:
-                    src = ui._entry_rect(items[0]).center
-                    ui.on_mouse_down(src)
-                    ui.on_mouse_motion((src[0] + ui.inv_cell, src[1]))
-                    ui.on_mouse_up((src[0] + ui.inv_cell, src[1]))
+                    ui.on_left_down(ui._entry_rect(items[0]).center)
+                    ox, oy = ui.inv_origin
+                    ui.on_left_down((ox + (ui.inv_cols - 1) * ui.inv_cell + 4,
+                                     oy + (ui.inv_rows - 1) * ui.inv_cell + 4))
             if frames == 3:  # right-click an identified item to equip
                 for e in ui.entries:
                     if not e.currency and e.obj.identified and ui._equippable(e.obj):
                         ui.on_right_down(ui._entry_rect(e).center)
                         break
-            if frames == 4:  # pick up a Scroll of Wisdom, left-click an item to use
+            if frames == 4:  # ready a Scroll of Wisdom, left-click an item to use it
                 cur = next((e for e in ui.entries if e.currency), None)
                 itm = next((e for e in ui.entries if not e.currency), None)
                 if cur and itm:
                     ui.on_right_down(ui._entry_rect(cur).center)
-                    click(ui._entry_rect(itm).center)
+                    ui.on_left_down(ui._entry_rect(itm).center)
+                    ui.on_right_down((0, 0))  # cancel orb on cursor
             if frames == 5:
-                click(ui.buttons["levelup"].center)   # level up
+                ui.on_left_down(ui.buttons["levelup"].center)
             if frames == 6:
-                click(ui.buttons["class"].center)      # cycle class
+                ui.on_left_down(ui.buttons["class"].center)
             if frames == 7:
-                click(ui.buttons["debug"].center)      # debug on
+                ui.on_left_down(ui.buttons["debug"].center)
                 if ui.dbg_rows:
-                    click(ui.dbg_rows[3][1].center)
+                    ui.on_left_down(ui.dbg_rows[3][1].center)
             if frames == 8:
                 ui.handle_escape()
                 ui.on_resize(1280, 760)
             if frames == 9:
-                click(ui.buttons["reload"].center)
+                ui.on_left_down(ui.buttons["reload"].center)
             if frames >= 11:
                 running = False
 
