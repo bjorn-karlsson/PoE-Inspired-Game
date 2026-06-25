@@ -32,14 +32,18 @@ python inventory_test.py --windowed
 
 - Inventory grid + equipment paper-doll; items show their **type** (the full
   name is in the tooltip).
-- Left-click a bag item to **equip** it; left-click an equipped item to **unequip**.
+- **Drag and drop**: drag a bag item onto the paper-doll to **equip** (auto-routed
+  to the right slot), drag an equipped item back to the bag to **unequip**, and
+  drag a currency orb onto a bag item to **use** it. Clicking still works too.
 - Hover any item for a PoE-style tooltip (item level, requirements, properties,
   mods). **Hold Alt** to also see each mod's **affix type** (implicit / prefix /
-  suffix), affix name, **tier** and value **range**.
-- **Currency**: Magic-and-better items drop **unidentified** (marked `?`). Use a
-  **Scroll of Wisdom** to identify them, or a **Chaos Orb** to reforge a rare
-  with new mods. Click a currency to select it, then click a bag item to use it
-  (right-click / Esc to cancel). Currency stacks (Wisdom ×40, Chaos ×20).
+  suffix), affix name, **tier** and value **range**. Tiers are **contextual to
+  the base type**, matching the in-game tier numbers.
+- **Currency** (12 orbs): Magic-and-better items drop **unidentified** (marked
+  `?`); a **Scroll of Wisdom** identifies them. Transmutation / Augmentation /
+  Alteration / Regal / Alchemy / Chaos / Exalted / Divine / Blessed / Annulment
+  / Scouring each follow PoE-style crafting rules. Click an orb to select it (or
+  drag it); right-click / Esc cancels.
 - Stats panel with selectable **tabs** (Defense / Offense / Attributes / All)
   and mouse-wheel **scrolling**.
 - **New Loot (reseed)** button rerolls everything with a fresh random seed.
@@ -144,8 +148,7 @@ The refactor fixed real bugs and reorganized the prototype:
 ## Roadmap ideas
 
 - Hand-authored **unique** items with fixed mods.
-- More crafting currency (Orb of Alteration / Augmentation / Exalted / Divine).
-- Drag-and-drop inventory and a tooltip stat-diff vs equipped gear.
+- Tooltip **stat-diff** vs the currently-equipped item (green/red deltas).
 - Skills, gems and damage-over-time.
 - Persistence (save/load characters and stashes).
 ```

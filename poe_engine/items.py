@@ -3,9 +3,17 @@
 from . import data
 from .modifiers import Modifier
 from .rarity import Rarities, Rarity
-from .rng import randint, uniform, weighted_choice
+from .rng import choice, randint, weighted_choice
 from .stats import Stats
 
+
+# Maximum (prefix, suffix) counts per rarity.
+_AFFIX_CAPS = {
+    Rarities.NORMAL: (0, 0),
+    Rarities.MAGIC: (1, 1),
+    Rarities.RARE: (3, 3),
+    Rarities.UNIQUE: (3, 3),
+}
 
 # Weapon item classes from the data, mapped onto the generic Weapon slot.
 _WEAPON_CLASSES = {
@@ -114,25 +122,101 @@ class Item:
         item.identified = item.rarity.rarity == Rarities.NORMAL
         return item
 
+    # -- affix bookkeeping -------------------------------------------------
+    @property
+    def modLevel(self):
+        """The item level used for which modifiers may roll."""
+        return self.itemLevel or self.dropLevel or 1
+
+    def affix_caps(self):
+        return _AFFIX_CAPS.get(self.rarity.rarity, (0, 0))
+
+    def open_affix_types(self):
+        """Which affix types still have a free slot at this rarity."""
+        prefix_cap, suffix_cap = self.affix_caps()
+        types = []
+        if len(self.prefixes) < prefix_cap:
+            types.append("prefix")
+        if len(self.suffixes) < suffix_cap:
+            types.append("suffix")
+        return types
+
+    def used_groups(self):
+        return {mod.group for mod in self.explicits}
+
+    # -- low-level crafting primitives -------------------------------------
+    def _add_affix(self, affix_type, used_groups, candidates=None):
+        if candidates is None:
+            candidates = _candidate_mods(self.tags, self.modLevel)
+        mods = data.modifiers()
+        pool = {mod_id: weight
+                for mod_id, weight in candidates[affix_type].items()
+                if (mods[mod_id].get("groups") or ["?"])[0] not in used_groups}
+        if not pool:
+            return None
+        mod_id = weighted_choice(pool)
+        if mod_id is None:
+            return None
+        modifier = Modifier.from_id(mod_id).roll()
+        used_groups.add(modifier.group)
+        (self.prefixes if affix_type == "prefix" else self.suffixes).append(modifier)
+        return modifier
+
     def _roll_explicit_mods(self):
+        self.prefixes = []
+        self.suffixes = []
         prefixes, suffixes = _mod_counts(self.rarity.rarity)
         if prefixes == 0 and suffixes == 0:
-            self.prefixes = []
-            self.suffixes = []
             return
-
-        candidates = _candidate_mods(self.tags, self.dropLevel)
+        candidates = _candidate_mods(self.tags, self.modLevel)
         used_groups = set()
-        self.prefixes = _roll_from(candidates["prefix"], prefixes, used_groups)
-        self.suffixes = _roll_from(candidates["suffix"], suffixes, used_groups)
+        for _ in range(prefixes):
+            self._add_affix("prefix", used_groups, candidates)
+        for _ in range(suffixes):
+            self._add_affix("suffix", used_groups, candidates)
+
+    # -- crafting actions (used by currency) -------------------------------
+    def set_rarity(self, rarity):
+        self.rarity.rarity = rarity
+        return self
 
     def reroll_explicits(self):
-        """Reforge the item: discard explicit mods and roll fresh ones.
-
-        Used by currency such as the Chaos Orb. The base, implicits and rarity
-        are kept; only prefixes/suffixes are replaced.
-        """
+        """Reforge: discard explicit mods and roll a fresh set for the rarity."""
         self._roll_explicit_mods()
+        return self
+
+    def add_random_affix(self):
+        """Add one random open-slot affix (Augmentation / Regal / Exalted)."""
+        types = self.open_affix_types()
+        if not types:
+            return None
+        return self._add_affix(choice(types), self.used_groups())
+
+    def reroll_values(self):
+        """Reroll the numeric values of every explicit mod (Divine Orb)."""
+        for mod in self.explicits:
+            mod.roll()
+        return self
+
+    def reroll_implicit_values(self):
+        """Reroll the numeric values of implicit mods (Blessed Orb)."""
+        for mod in self.implicits:
+            mod.roll()
+        return self
+
+    def remove_random_affix(self):
+        """Remove one random explicit mod (Orb of Annulment)."""
+        if not self.explicits:
+            return None
+        victim = choice(self.explicits)
+        (self.prefixes if victim in self.prefixes else self.suffixes).remove(victim)
+        return victim
+
+    def scour(self):
+        """Strip all explicit mods and revert to Normal (Orb of Scouring)."""
+        self.prefixes = []
+        self.suffixes = []
+        self.rarity.rarity = Rarities.NORMAL
         return self
 
 
@@ -206,24 +290,6 @@ def _candidate_mods(item_tags, drop_level):
         if best_weight > 0:
             result[gen_type][mod_id] = best_weight
     return result
-
-
-def _roll_from(weighted_ids, count, used_groups):
-    chosen = []
-    pool = dict(weighted_ids)
-    for _ in range(count):
-        if not pool:
-            break
-        mod_id = weighted_choice(pool)
-        if mod_id is None:
-            break
-        modifier = Modifier.from_id(mod_id).roll()
-        del pool[mod_id]
-        if modifier.group in used_groups:
-            continue  # skip duplicate-group mods, slot is consumed
-        used_groups.add(modifier.group)
-        chosen.append(modifier)
-    return chosen
 
 
 # -- item type hierarchy ---------------------------------------------------

@@ -124,6 +124,33 @@ def prettify(stat_id):
     return s.replace("_", " ")
 
 
+_STOPWORDS = {"orb", "of", "scroll"}
+
+
+def orb_abbrev(name):
+    """Short tag for an orb, e.g. 'Orb of Transmutation' -> 'Tra'."""
+    for word in name.split():
+        if word.lower() not in _STOPWORDS:
+            return word[:3]
+    return name[:3]
+
+
+def ORB_COLOR(name):
+    """A stable-ish colour per orb, keyed on its distinctive word."""
+    palette = {
+        "Wisdom": (120, 190, 230), "Transmutation": (120, 150, 240),
+        "Augmentation": (120, 150, 240), "Alteration": (110, 130, 235),
+        "Regal": (210, 160, 90), "Alchemy": (235, 200, 110),
+        "Chaos": (210, 120, 60), "Exalted": (235, 215, 130),
+        "Divine": (245, 235, 200), "Blessed": (200, 150, 230),
+        "Annulment": (210, 110, 120), "Scouring": (160, 160, 170),
+    }
+    for word in name.split():
+        if word in palette:
+            return palette[word]
+    return (180, 160, 110)
+
+
 # ----------------------------------------------------------- demo content ----
 def make_demo_character(item_count=22, drop_level=74):
     hero = Character("Exile", level=20)
@@ -165,6 +192,12 @@ class InventoryTest:
         self.status_text = ""
         self.status_timer = 0
 
+        # drag-and-drop
+        self._press_pos = None
+        self._press_target = None   # ('inv', item) | ('slot', name) | ('currency', i)
+        self._dragging = False
+        self.drag = None            # {'label', 'color'} of the thing being dragged
+
         self.slot_rects = {}
         self.inv_rects = []
         self.buttons = {}
@@ -203,12 +236,17 @@ class InventoryTest:
             y = oy + row * (self.doll_cell + self.doll_gap)
             self.slot_rects[slot] = pygame.Rect(x, y, self.doll_cell, self.doll_cell)
 
-        # Currency panel sits under the paper-doll.
-        cur_y = oy + 4 * (self.doll_cell + self.doll_gap) + 36
+        # Currency panel sits under the paper-doll, as a compact grid of orbs.
+        cur_y = oy + 4 * (self.doll_cell + self.doll_gap) + 34
         self.currency_origin = (ox, cur_y)
+        self.cur_cell = 62
+        self.cur_cols = max(4, (doll_w + self.doll_gap) // (self.cur_cell + 8))
         self.currency_rects = []
         for i in range(len(self.currency)):
-            rect = pygame.Rect(ox, cur_y + i * 50, doll_w, 44)
+            col, row = i % self.cur_cols, i // self.cur_cols
+            rect = pygame.Rect(ox + col * (self.cur_cell + 8),
+                               cur_y + row * (self.cur_cell + 8),
+                               self.cur_cell, self.cur_cell)
             self.currency_rects.append(rect)
 
         # Toolbar buttons (top right area).
@@ -340,6 +378,67 @@ class InventoryTest:
         self.status_text = text
         self.status_timer = 200
 
+    # -- drag and drop -----------------------------------------------------
+    def _inventory_rect(self):
+        ox, oy = self.inv_origin
+        return pygame.Rect(ox, oy, self.inv_cols * self.inv_cell,
+                           self.inv_rows * self.inv_cell)
+
+    def _draggable_at(self, pos):
+        for i, rect in enumerate(self.currency_rects):
+            if rect.collidepoint(pos) and self.currency[i].count > 0:
+                return ("currency", i)
+        for item, rect in self.inv_rects:
+            if rect.collidepoint(pos):
+                return ("inv", item)
+        for slot, rect in self.slot_rects.items():
+            if rect.collidepoint(pos) and getattr(self.character.equipments, slot):
+                return ("slot", slot)
+        return None
+
+    def on_mouse_down(self, pos):
+        self._press_pos = pos
+        self._press_target = self._draggable_at(pos)
+        self._dragging = False
+
+    def on_mouse_motion(self, pos):
+        if self._press_pos and not self._dragging and self._press_target:
+            if abs(pos[0] - self._press_pos[0]) + abs(pos[1] - self._press_pos[1]) > 6:
+                self._dragging = True
+                self.drag = self._make_drag(self._press_target)
+
+    def on_mouse_up(self, pos):
+        if self._dragging:
+            self._drop(pos)
+        elif self._press_pos is not None:
+            self.handle_click(self._press_pos)  # treat as a click
+        self._press_pos = self._press_target = None
+        self._dragging = False
+        self.drag = None
+
+    def _make_drag(self, target):
+        kind, value = target
+        if kind == "currency":
+            cur = self.currency[value]
+            return {"label": orb_abbrev(cur.name), "color": ORB_COLOR(cur.name)}
+        item = value if kind == "inv" else getattr(self.character.equipments, value)
+        return {"label": item.itemClass, "color": RARITY_COLORS.get(item.rarity.rarity, TEXT)}
+
+    def _drop(self, pos):
+        kind, value = self._press_target
+        if kind == "inv":
+            if any(r.collidepoint(pos) for r in self.slot_rects.values()):
+                self._equip_from_bag(value)
+        elif kind == "slot":
+            if self._inventory_rect().collidepoint(pos):
+                self._unequip_to_bag(value)
+        elif kind == "currency":
+            target = self.item_at(pos)
+            if target and target[0] == "inv":
+                self.selected_currency = value
+                self._apply_currency(target[1])
+                self.selected_currency = None
+
     def handle_scroll(self, dy, pos):
         if pos[0] < self.inv_origin[0]:  # over the stats column
             step = 36
@@ -401,7 +500,10 @@ class InventoryTest:
             self._draw_stats(s)
         self._draw_inventory(s)
         self._draw_help(s)
-        self._draw_tooltip(s, mouse_pos)
+        if self._dragging and self.drag:
+            self._draw_drag_ghost(s, mouse_pos)
+        else:
+            self._draw_tooltip(s, mouse_pos)
 
         if self.status_timer > 0:
             self.status_timer -= 1
@@ -419,17 +521,22 @@ class InventoryTest:
             cur = self.currency[i]
             selected = self.selected_currency == i
             hot = rect.collidepoint(mouse_pos)
-            bg = (60, 60, 40) if selected else (BTN_HOT if hot else PANEL)
-            pygame.draw.rect(s, bg, rect, border_radius=6)
-            border = ACCENT if selected else PANEL_LIGHT
-            pygame.draw.rect(s, border, rect, width=2, border_radius=6)
-            # little orb swatch
-            pygame.draw.circle(s, (150, 130, 90), (rect.x + 24, rect.centery), 13)
-            pygame.draw.circle(s, (90, 75, 50), (rect.x + 24, rect.centery), 13, width=2)
-            name = self.f_small.render(cur.name, True, TEXT if cur.count else FAINT)
-            s.blit(name, (rect.x + 46, rect.centery - 10))
-            count = self.f_small.render(f"x{cur.count}", True, DIM)
-            s.blit(count, count.get_rect(right=rect.right - 12, centery=rect.centery))
+            bg = (62, 58, 36) if selected else (BTN_HOT if hot else PANEL)
+            pygame.draw.rect(s, bg, rect, border_radius=8)
+            pygame.draw.rect(s, ACCENT if selected else PANEL_LIGHT, rect,
+                             width=2, border_radius=8)
+            # orb circle + abbreviation
+            cx, cy = rect.centerx, rect.centery - 6
+            base = ORB_COLOR(cur.name)
+            faded = cur.count == 0
+            col = tuple(c // 2 for c in base) if faded else base
+            pygame.draw.circle(s, col, (cx, cy), 16)
+            pygame.draw.circle(s, (235, 230, 215), (cx - 5, cy - 5), 4)
+            abbr = self.f_tiny.render(orb_abbrev(cur.name), True, (20, 18, 14))
+            s.blit(abbr, abbr.get_rect(center=(cx, cy + 1)))
+            count = self.f_tiny.render(str(cur.count), True,
+                                       TEXT if cur.count else FAINT)
+            s.blit(count, count.get_rect(centerx=cx, bottom=rect.bottom - 4))
 
     def _button(self, rect, label, hot, on=False):
         color = BTN_ON if on else (BTN_HOT if hot else BTN)
@@ -657,9 +764,20 @@ class InventoryTest:
         self._clamp_scroll("dbg_scroll", panel.height)
 
     def _draw_help(self, s):
-        help_text = ("Click bag item = equip / use selected currency  •  click equipped = unequip  •  "
-                     "click currency = select (right-click/Esc = cancel)  •  hold Alt = ranges, tiers & affixes  •  Esc = back/quit")
+        help_text = ("Drag items to equip/unequip  •  drag an orb onto a bag item to use it  •  "
+                     "click = equip / select  •  hold Alt = ranges, tiers & affixes  •  Esc = back/quit")
         s.blit(self.f_small.render(help_text, True, DIM), (40, self.H - 34))
+
+    def _draw_drag_ghost(self, s, mouse_pos):
+        w, h = 84, 44
+        rect = pygame.Rect(0, 0, w, h)
+        rect.center = mouse_pos
+        ghost = pygame.Surface((w, h), pygame.SRCALPHA)
+        ghost.fill((20, 20, 26, 210))
+        pygame.draw.rect(ghost, self.drag["color"], ghost.get_rect(), width=2, border_radius=6)
+        label = self.f_tiny.render(str(self.drag["label"]), True, self.drag["color"])
+        ghost.blit(label, label.get_rect(center=(w // 2, h // 2)))
+        s.blit(ghost, rect)
 
     # -- tooltip -----------------------------------------------------------
     def _wrap(self, text, color, max_w, font):
@@ -704,7 +822,7 @@ class InventoryTest:
                 if kind != "Implicit" and mod.name:
                     tag += f": {mod.name}"
                 if show_ranges:
-                    tier, total = mod_tier(mod.id)
+                    tier, total = mod_tier(mod.id, item.tags)
                     tag += f"  ·  Tier {tier}/{total}"
                 push(tag, FAINT, self.f_tiny)
                 if show_ranges:
@@ -852,7 +970,11 @@ def run(screen, item_count=22, selftest=False):
                 if not ui.handle_escape():
                     running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                ui.handle_click(event.pos)
+                ui.on_mouse_down(event.pos)
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                ui.on_mouse_up(event.pos)
+            elif event.type == pygame.MOUSEMOTION:
+                ui.on_mouse_motion(event.pos)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
                 ui.deselect()
             elif event.type == pygame.MOUSEWHEEL:
@@ -864,8 +986,11 @@ def run(screen, item_count=22, selftest=False):
 
         if selftest:
             frames += 1
-            if frames == 2 and ui.inv_rects:
-                ui.handle_click(ui.inv_rects[0][1].center)   # equip
+            if frames == 2 and ui.inv_rects:               # drag bag item -> slot
+                src = ui.inv_rects[0][1].center
+                ui.on_mouse_down(src)
+                ui.on_mouse_motion((src[0] + 20, src[1] + 20))
+                ui.on_mouse_up(ui.slot_rects["weapon"].center)
             if frames == 3:
                 ui.handle_click(ui.buttons["debug"].center)  # debug on
             if frames == 4 and ui.dbg_rows:
@@ -873,10 +998,11 @@ def run(screen, item_count=22, selftest=False):
             if frames == 5:
                 ui.handle_escape()                           # back to list
                 ui.handle_click(ui.buttons["debug"].center)  # debug off
-            if frames == 6 and ui.currency_rects:
-                ui.handle_click(ui.currency_rects[0].center)  # select Wisdom
-                if ui.inv_rects:
-                    ui.handle_click(ui.inv_rects[-1][1].center)  # identify
+            if frames == 6 and ui.currency_rects and ui.inv_rects:
+                src = ui.currency_rects[0].center            # drag Wisdom -> item
+                ui.on_mouse_down(src)
+                ui.on_mouse_motion((src[0] + 20, src[1]))
+                ui.on_mouse_up(ui.inv_rects[-1][1].center)
             if frames == 7:
                 ui.handle_click(ui.buttons["reload"].center)  # reseed
             if frames >= 9:

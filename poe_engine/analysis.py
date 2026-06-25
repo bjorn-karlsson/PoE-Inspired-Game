@@ -17,30 +17,66 @@ from .stats import PoolStat
 
 # ---------------------------------------------------------------- tiers ----
 @lru_cache(maxsize=None)
-def _group_tier_table() -> dict:
-    """Map ``mod_id -> (tier, total_tiers)`` ranking within its group.
+def _family_members() -> dict:
+    """Group spawnable item mods by ``(type, generation_type)`` family."""
+    families = {}
+    for mod_id, mod in data.modifiers().items():
+        if mod.get("domain") != "item":
+            continue
+        if mod.get("generation_type") not in ("prefix", "suffix"):
+            continue
+        if mod.get("is_essence_only"):
+            continue
+        if not mod.get("spawn_weights"):
+            continue
+        key = (mod.get("type") or (mod.get("groups") or ["?"])[0],
+               mod["generation_type"])
+        families.setdefault(key, []).append(mod_id)
+    return families
 
-    Higher required level == better tier (tier 1 is best), matching how PoE
-    numbers tiers within a mod group.
+
+def _family_key(mod):
+    return (mod.get("type") or (mod.get("groups") or ["?"])[0],
+            mod.get("generation_type"))
+
+
+@lru_cache(maxsize=None)
+def _ranked_family(family_key, tags):
+    """Family members ordered best-first (highest required level = tier 1).
+
+    When *tags* is given, only mods that can actually spawn on those tags are
+    counted -- this is what makes the tier contextual to the item's base type,
+    matching the tier numbers shown in-game.
     """
-    groups = {}
-    for mod_id, mod in data.item_modifiers().items():
-        group = (mod.get("groups") or ["?"])[0]
-        groups.setdefault(group, []).append(
-            (mod.get("required_level", 1), mod_id))
-
-    table = {}
-    for members in groups.values():
-        members.sort(key=lambda item: (-item[0], item[1]))
-        total = len(members)
-        for index, (_, mod_id) in enumerate(members):
-            table[mod_id] = (index + 1, total)
-    return table
+    members = _family_members().get(family_key, ())
+    mods = data.modifiers()
+    if tags is not None:
+        tagset = set(tags)
+        filtered = [m for m in members
+                    if any(w["tag"] in tagset and w["weight"] > 0
+                           for w in mods[m].get("spawn_weights", []))]
+        members = filtered or list(members)
+    return tuple(sorted(members,
+                        key=lambda m: (-mods[m].get("required_level", 1), m)))
 
 
-def mod_tier(mod_id) -> tuple:
-    """Return ``(tier, total_tiers)`` for *mod_id* (defaults to ``(1, 1)``)."""
-    return _group_tier_table().get(mod_id, (1, 1))
+def mod_tier(mod_id, item_tags=None) -> tuple:
+    """Return ``(tier, total_tiers)`` for *mod_id*.
+
+    The data has no literal "tier" field, but in Path of Exile the tier shown
+    when alt-hovering is the rank of a modifier within its affix family (mod
+    ``type``) ordered by required level -- tier 1 is the best. Passing the
+    item's tags restricts the ranking to mods that can roll on that base type,
+    reproducing the in-game tier numbers (Hale, Healthy, Sanguine, ... for life).
+    """
+    mod = data.modifiers().get(mod_id)
+    if mod is None:
+        return (1, 1)
+    tags = tuple(sorted(item_tags)) if item_tags is not None else None
+    ranked = _ranked_family(_family_key(mod), tags)
+    if mod_id not in ranked:
+        return (1, max(1, len(ranked)))
+    return (ranked.index(mod_id) + 1, len(ranked))
 
 
 # --------------------------------------------------------------- stats ----
